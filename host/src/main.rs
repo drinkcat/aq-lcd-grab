@@ -138,12 +138,31 @@ fn reader_loop(
         let mut g = shared.lock().unwrap();
         if frame.cmd == CMD_LOG {
             let text = log_text(&frame.data);
+            println!("• {text}");
             push_log(&mut g.log, LogEntry::Msg(text));
         } else {
+            println!("{}", format_tx(&frame));
             g.fb.apply(&frame);
             push_log(&mut g.log, LogEntry::Tx(frame));
         }
     }
+}
+
+fn format_tx(tx: &Frame) -> String {
+    let mut line = format!("{:#04x} {}", tx.cmd, cmd_name(tx.cmd));
+    if !tx.data.is_empty() {
+        line.push_str(&format!(" [{}]", tx.data.len()));
+        for (i, w) in tx.data.iter().take(6).enumerate() {
+            if i == 0 {
+                line.push(' ');
+            }
+            line.push_str(&format!("{w:04x} "));
+        }
+        if tx.data.len() > 6 {
+            line.push('…');
+        }
+    }
+    line
 }
 
 fn push_log(log: &mut std::collections::VecDeque<LogEntry>, entry: LogEntry) {
@@ -205,21 +224,7 @@ impl eframe::App for App {
                                 ui.colored_label(egui::Color32::LIGHT_BLUE, format!("• {s}"));
                             }
                             LogEntry::Tx(tx) => {
-                                let mut line =
-                                    format!("{:#04x} {}", tx.cmd, cmd_name(tx.cmd));
-                                if !tx.data.is_empty() {
-                                    line.push_str(&format!(" [{}]", tx.data.len()));
-                                    for (i, w) in tx.data.iter().take(6).enumerate() {
-                                        if i == 0 {
-                                            line.push(' ');
-                                        }
-                                        line.push_str(&format!("{w:04x} "));
-                                    }
-                                    if tx.data.len() > 6 {
-                                        line.push('…');
-                                    }
-                                }
-                                ui.label(line);
+                                ui.label(format_tx(tx));
                             }
                         }
                     }
