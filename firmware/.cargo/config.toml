@@ -1,0 +1,5 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "elf2uf2-rs deploy --family rp2350-arm-s"
+
+[build]
+target = "thumbv8m.main-none-eabihf"

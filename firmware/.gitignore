@@ -1,0 +1,12 @@
+# Build artifacts
+/target
+
+# elf2uf2-rs intermediate output if it ever lands here
+*.uf2
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
