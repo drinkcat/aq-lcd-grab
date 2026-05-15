@@ -1,0 +1,24 @@
+[package]
+name = "aq-lcd-grab-host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "viewer"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.34", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+egui = "0.34"
+serialport = "4.9"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+debug = true
