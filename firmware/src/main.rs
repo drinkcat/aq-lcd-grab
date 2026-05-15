@@ -23,7 +23,7 @@ use panic_halt as _;
 
 use decoder::{Decoder, Sample as DecSample, Transaction};
 use picotool_reset::PicotoolHandler;
-use pio_capture::{Capture, CapturePins, Sample as RawSample};
+use pio_capture::{CapturePins, RingCapture, Sample as RawSample};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => UsbInterruptHandler<USB>;
@@ -42,8 +42,17 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
 
-const CAPTURE_LEN: usize = 4096;
-static mut CAPTURE_BUF: [RawSample; CAPTURE_LEN] = [0; CAPTURE_LEN];
+// Ring buffer: power-of-2 sample count, byte-size also power-of-2,
+// aligned to its size in bytes. 1024 samples × 4 B = 4096 B (ring_size=12).
+// 4 KB alignment is well within what rustc/lld will honour for statics.
+const RING_LEN: usize = 1024;
+#[repr(align(4096))]
+struct RingBuf([RawSample; RING_LEN]);
+static mut RING_BUF: RingBuf = RingBuf([0; RING_LEN]);
+
+/// Sample chunk size we drain per loop iteration. Decode + send happens
+/// in tight bursts of this many samples.
+const DRAIN_CHUNK: usize = 1024;
 
 /// Channel from the capture task to the USB sender.
 type TxChannel = Channel<ThreadModeRawMutex, Transaction, 8>;
@@ -113,7 +122,13 @@ async fn main(_spawner: Spawner) {
     let mut usb = builder.build();
 
     let pio = Pio::new(p.PIO0, Irqs);
-    let mut capture = Capture::new(
+    // SAFETY: RING_BUF is only ever borrowed here, exactly once, for the
+    // remainder of the program.
+    let ring_slice: &'static mut [RawSample] = unsafe {
+        let ptr = core::ptr::addr_of_mut!(RING_BUF.0) as *mut RawSample;
+        core::slice::from_raw_parts_mut(ptr, RING_LEN)
+    };
+    let mut capture = RingCapture::new(
         pio,
         p.DMA_CH0,
         CapturePins {
@@ -138,6 +153,7 @@ async fn main(_spawner: Spawner) {
             wr: p.PIN_18,
         },
         Irqs,
+        ring_slice,
     );
 
     let (mut sender, _receiver) = cdc_class.split();
@@ -156,23 +172,29 @@ async fn main(_spawner: Spawner) {
     };
 
     let capture_fut = async {
-        // Brief settle so the host has time to open /dev/ttyACM0.
         Timer::after_millis(500).await;
-        log_line(TX_CHANNEL.sender(), "capture loop starting");
+        log_line(TX_CHANNEL.sender(), "ring capture starting");
 
         let mut decoder = Decoder::default();
+        let mut chunk = [0u32; DRAIN_CHUNK];
+        let mut idle_ticks: u32 = 0;
         loop {
-            // SAFETY: single-task, owned by capture loop.
-            let buf = unsafe { &mut *core::ptr::addr_of_mut!(CAPTURE_BUF) };
-            capture.capture(buf).await;
-
-            for &raw in buf.iter() {
+            let n = capture.drain(&mut chunk);
+            if n == 0 {
+                idle_ticks = idle_ticks.wrapping_add(1);
+                if idle_ticks.is_multiple_of(2500) {
+                    // Every ~5 s of pure idle, breadcrumb so the host
+                    // can tell "no traffic" from "firmware wedged".
+                    log_line(TX_CHANNEL.sender(), "idle");
+                }
+                Timer::after_millis(2).await;
+                continue;
+            }
+            idle_ticks = 0;
+            for &raw in &chunk[..n] {
                 let sample = DecSample::from_raw(raw);
-                if let Some(tx) = decoder.feed(sample)
-                    && TX_CHANNEL.try_send(tx).is_err()
-                {
-                    // Channel full — host can't keep up. Drop this tx.
-                    // (The host will see a gap; not much else we can do.)
+                if let Some(tx) = decoder.feed(sample) {
+                    TX_CHANNEL.send(tx).await;
                 }
             }
         }

@@ -3,8 +3,8 @@
 //! Pin assignment (consecutive GPIOs required for `in pins, N`):
 //!
 //!     GPIO 0..=15 -> DB0..=DB15  (16-bit data bus)
-//!     GPIO 16     -> D/C (RS)
-//!     GPIO 17     -> CS
+//!     GPIO 16     -> D/C (RS)     [physically wired to CS — see decoder.rs]
+//!     GPIO 17     -> CS           [physically wired to DC]
 //!     GPIO 18     -> WR (write strobe — sample trigger)
 //!
 //! Each captured word in the RX FIFO is laid out (LSB first):
@@ -14,49 +14,38 @@
 //!
 //! Upper 14 bits of the 32-bit word are zero (autopush threshold = 18).
 //!
-//! Sampling on WR rising edge — 8080 spec says data is valid then, and the
-//! display is the slave being driven by the MCU, so the rising edge marks
-//! "data has just been latched, sample it now".
+//! Sampling on WR rising edge — 8080 spec says data is valid then.
 
 use embassy_rp::Peri;
-use embassy_rp::dma::{self, Channel, Transfer};
+use embassy_rp::dma::{self, Channel};
+use embassy_rp::pac::dma::vals;
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Common, Config, Pio, ShiftConfig, ShiftDirection, StateMachine};
 
-/// One sample as it lands in the FIFO. Lower 18 bits are live signals.
+/// One sample as it lands in the FIFO.
 pub type Sample = u32;
 
-/// Extract the 16 data bits.
-#[inline]
-#[allow(dead_code)]
-pub fn data(s: Sample) -> u16 {
-    (s & 0xFFFF) as u16
-}
-
-/// Extract D/C (1 = data, 0 = command).
-#[inline]
-#[allow(dead_code)]
-pub fn dc(s: Sample) -> bool {
-    (s >> 16) & 1 != 0
-}
-
-/// Extract CS (1 = deasserted, 0 = asserted).
-#[inline]
-#[allow(dead_code)]
-pub fn cs(s: Sample) -> bool {
-    (s >> 17) & 1 != 0
-}
-
-pub struct Capture<'d> {
-    // Keep `Common` alive — dropping it reverts every claimed pin's funcsel
-    // to NULL, which silently breaks the running state machine.
+/// PIO + DMA running in ring mode: DMA writes continuously into a
+/// power-of-2-aligned buffer, wrapping on its own. The CPU polls the
+/// DMA's `write_addr` to find new samples.
+pub struct RingCapture<'d> {
     _common: Common<'d, PIO0>,
-    sm: StateMachine<'d, PIO0, 0>,
-    dma: Channel<'d>,
+    _sm: StateMachine<'d, PIO0, 0>,
+    _dma: Channel<'d>,
+    /// Cached DMA channel register block.
+    regs: embassy_rp::pac::dma::Channel,
+    /// Pointer to the start of the ring buffer (DMA write base).
+    base: *mut Sample,
+    /// log2(buffer length in samples). `len = 1 << log2_len`.
+    log2_len: u8,
+    /// Next sample index we will read out.
+    read_pos: u32,
 }
 
-impl<'d> Capture<'d> {
+impl<'d> RingCapture<'d> {
+    /// `buf` must be a power-of-2-sized slice, aligned to (len * 4) bytes.
+    /// RP2350 ring_size is in bytes — len_in_bytes must be a power of 2.
     pub fn new<DmaCh>(
         pio: Pio<'d, PIO0>,
         dma_peri: Peri<'d, DmaCh>,
@@ -65,10 +54,27 @@ impl<'d> Capture<'d> {
             <DmaCh as dma::ChannelInstance>::Interrupt,
             dma::InterruptHandler<DmaCh>,
         > + 'd,
+        buf: &'static mut [Sample],
     ) -> Self
     where
         DmaCh: dma::ChannelInstance,
     {
+        // Validate: power-of-2 length and aligned address.
+        let len = buf.len();
+        assert!(
+            len.is_power_of_two(),
+            "ring buffer length must be a power of 2"
+        );
+        let len_bytes = core::mem::size_of_val(buf);
+        let base_addr = buf.as_mut_ptr() as usize;
+        assert!(
+            base_addr.is_multiple_of(len_bytes),
+            "ring buffer must be aligned to its size in bytes (len*4)"
+        );
+        let log2_len = len.trailing_zeros() as u8;
+        let log2_len_bytes = len_bytes.trailing_zeros() as u8;
+        assert!(log2_len_bytes <= 31, "ring buffer too large");
+
         let Pio {
             mut common,
             mut sm0,
@@ -77,15 +83,14 @@ impl<'d> Capture<'d> {
 
         let prg = pio_asm!(
             ".wrap_target",
-            "    wait 0 gpio 18", // WR goes low (host starts writing)
-            "    wait 1 gpio 18", // WR returns high — data is latched, sample now
-            "    in pins, 18",    // sample {CS, DC, DB15..DB0}
+            "    wait 0 gpio 18",
+            "    wait 1 gpio 18",
+            "    in pins, 18",
             ".wrap",
         );
 
         let loaded = common.load_program(&prg.program);
 
-        // Claim the input pins for the PIO. They stay as inputs.
         let p_in: [_; 18] = [
             common.make_pio_pin(pins.db0),
             common.make_pio_pin(pins.db1),
@@ -107,41 +112,116 @@ impl<'d> Capture<'d> {
             common.make_pio_pin(pins.cs),
         ];
         let _wr = common.make_pio_pin(pins.wr);
-
         let p_refs: [&_; 18] = core::array::from_fn(|i| &p_in[i]);
 
         let mut cfg = Config::default();
         cfg.use_program(&loaded, &[]);
         cfg.set_in_pins(&p_refs);
         cfg.shift_in = ShiftConfig {
-            // Autopush after 18 bits — every WR rising edge emits one FIFO word.
             auto_fill: true,
             threshold: 18,
-            // ISR shifts left: `in pins, 18` puts pin_base+0 (DB0) at ISR bit 0,
-            // pin_base+17 (CS) at ISR bit 17. (With Right, bits land in 14..31
-            // of the 32-bit pushed word — confusing for downstream decode.)
             direction: ShiftDirection::Left,
         };
-        // Default clock divider = 1 -> PIO runs at sys_clk (150 MHz on RP2350).
-        // WR period is ~1.5 µs, our loop body is 3 instructions = 20 ns. Plenty.
 
         sm0.set_config(&cfg);
         sm0.set_enable(true);
 
+        // Channel number from the type's compile-time const (the
+        // peripheral has not been claimed yet via `Channel::new`, so
+        // call the trait function on the type).
+        let ch_num = <DmaCh as dma::ChannelInstance>::number();
+
+        // Construct the DMA channel without using embassy-rp's high-level
+        // Transfer API — we want a free-running DMA with ring-write.
+        let dma = Channel::new(dma_peri, dma_irqs);
+        let regs = dma.regs();
+
+        let dreq = sm0.rx_treq();
+        let pio_rxf = sm0.rx_fifo_ptr() as u32;
+
+        regs.read_addr().write_value(pio_rxf);
+        regs.write_addr().write_value(base_addr as u32);
+        regs.trans_count().write(|w| {
+            // TRIGGER_SELF: when count hits 0 the channel re-triggers
+            // itself. Combined with the ring_size wrap on the write
+            // address, this gives a free-running ring buffer.
+            w.set_mode(vals::TransCountMode::TRIGGER_SELF);
+            w.set_count(len as u32);
+        });
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        regs.ctrl_trig().write(|w| {
+            w.set_treq_sel(dreq);
+            w.set_data_size(vals::DataSize::SIZE_WORD);
+            w.set_incr_read(false);
+            w.set_incr_write(true);
+            // ring_sel=true wraps the WRITE address. ring_sel=false
+            // would wrap the (peripheral) read pointer instead — which
+            // is not ring-aligned, AHB-errors on the first transfer,
+            // and silently bricks the firmware via the DMA IRQ panic.
+            w.set_ring_sel(true);
+            w.set_ring_size(log2_len_bytes);
+            // chain_to == self disables external chaining.
+            w.set_chain_to(ch_num);
+            // Re-trigger fires the per-channel completion IRQ; we
+            // don't care, so silence it.
+            w.set_irq_quiet(true);
+            w.set_bswap(false);
+            w.set_en(true);
+        });
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+
         Self {
             _common: common,
-            sm: sm0,
-            dma: Channel::new(dma_peri, dma_irqs),
+            _sm: sm0,
+            _dma: dma,
+            regs,
+            base: buf.as_mut_ptr(),
+            log2_len,
+            read_pos: 0,
         }
     }
 
-    /// One-shot capture: fill `buf` with N consecutive samples, then return.
-    /// On the real target a "burst" is ~3300 samples (~6.6 KB) every ~1 s, so
-    /// 4096 words is a comfortable single-burst capture.
-    pub fn capture<'a>(&'a mut self, buf: &'a mut [Sample]) -> Transfer<'a> {
-        self.sm.rx().dma_pull(&mut self.dma, buf, false)
+    fn len_mask(&self) -> u32 {
+        (1u32 << self.log2_len) - 1
+    }
+
+    /// Returns the DMA's current write index (sample-position relative
+    /// to the ring base, modulo `len`).
+    pub fn write_pos(&self) -> u32 {
+        let waddr = self.regs.write_addr().read();
+        let byte_off = waddr.wrapping_sub(self.base as u32);
+        (byte_off >> 2) & self.len_mask()
+    }
+
+    /// Number of samples available to read since the last call.
+    pub fn available(&self) -> u32 {
+        let w = self.write_pos();
+        // Ring distance from read_pos to w.
+        w.wrapping_sub(self.read_pos) & self.len_mask()
+    }
+
+    /// Pop up to `max` samples into `out`. Returns the count actually copied.
+    /// If the ring has overrun (writer has lapped the reader), the oldest
+    /// samples are silently dropped — the caller can detect this by
+    /// noticing a decreased `available()` mid-loop, but for our PoC we
+    /// just consume what's there.
+    pub fn drain(&mut self, out: &mut [Sample]) -> usize {
+        let avail = self.available() as usize;
+        let n = avail.min(out.len());
+        let mask = self.len_mask();
+        for (i, slot) in out.iter_mut().take(n).enumerate() {
+            let idx = (self.read_pos.wrapping_add(i as u32)) & mask;
+            // SAFETY: idx < len, base is valid for `len` samples.
+            *slot = unsafe { core::ptr::read_volatile(self.base.add(idx as usize)) };
+        }
+        self.read_pos = self.read_pos.wrapping_add(n as u32) & mask;
+        n
     }
 }
+
+// SAFETY: the ring buffer is Send because `*mut Sample` is the only
+// non-Send field. We only touch it from the capture task (single owner).
+unsafe impl Send for RingCapture<'_> {}
 
 pub struct CapturePins<'d> {
     pub db0: Peri<'d, embassy_rp::peripherals::PIN_0>,
