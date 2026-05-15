@@ -1,0 +1,9 @@
+# picotool / libusb access to the aq-lcd-grab firmware while it's running.
+# Embassy's default USB VID/PID; picotool finds the device via the vendor
+# RESET interface (class 0xff / subclass 0x00 / protocol 0x01).
+#
+# Install with:
+#   sudo install -m 0644 firmware/udev/71-aq-lcd-grab.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="c0de", ATTRS{idProduct}=="cafe", MODE="0660", TAG+="uaccess"

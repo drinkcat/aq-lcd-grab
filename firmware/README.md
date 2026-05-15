@@ -14,23 +14,31 @@ the PIO/DMA wiring is sound.
 ```sh
 rustup target add thumbv8m.main-none-eabihf
 sudo pacman -S picotool        # /usr/bin/picotool, v2.2.0+
+
+# Grant picotool permission to talk to our app-mode VID/PID (c0de:cafe).
+sudo install -m 0644 firmware/udev/71-aq-lcd-grab.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 ## Flashing
 
-`picotool` does flash+verify+execute in one shot. The cargo runner is set
-to `picotool load -u -v -x -t elf` in [.cargo/config.toml](.cargo/config.toml).
+```sh
+cargo run --release
+```
 
-1. Hold **BOOTSEL** while plugging in the Pico (or short RUN to GND). The
-   device enumerates as `2e8a:000f` (Raspberry Pi RP2350 Boot).
-2. Build and flash:
+That's it. The cargo runner is [`scripts/flash.sh`](scripts/flash.sh),
+which:
 
-   ```sh
-   cargo run --release
-   ```
+- If the Pico is in BOOTSEL (`2e8a:000f`), just runs `picotool load`.
+- If the Pico is running our firmware (`c0de:cafe`), sends a USB reset
+  request via the picotool reset interface — the firmware calls
+  `reset_to_usb_boot()`, the ROM re-enumerates as BOOTSEL, then we
+  `picotool load`. **No button-press, no replug.**
+- Otherwise, prints a hint to plug in / hold BOOTSEL.
 
-   No mass-storage mount needed. picotool talks to the BOOTSEL ROM over
-   USB directly, writes the ELF to flash, verifies, and executes.
+The first-ever flash still needs a manual BOOTSEL (hold the button while
+plugging in), since the picotool reset interface only exists once our
+firmware is running.
 
 ## Reading the USB serial output
 
