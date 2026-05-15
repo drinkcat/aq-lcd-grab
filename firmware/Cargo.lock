@@ -35,6 +35,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "embassy-usb-logger",
+ "heapless 0.9.3",
  "log",
  "panic-halt",
  "static_cell",

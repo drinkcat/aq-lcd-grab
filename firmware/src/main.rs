@@ -163,18 +163,28 @@ async fn main(_spawner: Spawner) {
 
             capture.capture(buf).await;
 
-            log::info!("captured {} samples, first 32:", CAPTURE_LEN);
-            for (i, &s) in buf.iter().take(32).enumerate() {
-                log::info!(
-                    "  [{:4}] cs={} dc={} data=0x{:04x}",
-                    i,
-                    pio_capture::cs(s) as u8,
-                    pio_capture::dc(s) as u8,
-                    pio_capture::data(s),
-                );
+            log::info!("captured {} samples, dumping all:", CAPTURE_LEN);
+            // Pack 4 samples per line: "[NNNN] cs=X dc=Y 0xHHHH ..." gets
+            // long; instead use a compact hex layout "[NNNN] HHHHH HHHHH ..."
+            // where each 5-hex-digit chunk encodes {CS bit 16, DC bit 15..0}.
+            // 8 samples per line ≈ 70 chars, 4096/8 = 512 lines.
+            for chunk_idx in (0..CAPTURE_LEN).step_by(8) {
+                let mut line = heapless::String::<128>::new();
+                let _ = core::fmt::write(&mut line, format_args!("[{:04}]", chunk_idx));
+                for j in 0..8 {
+                    let s = buf[chunk_idx + j];
+                    // 18 bits total -> 5 hex digits.
+                    let _ = core::fmt::write(&mut line, format_args!(" {:05x}", s & 0x3FFFF));
+                }
+                log::info!("{}", line.as_str());
+                // Yield every 16 lines so the logger pipe drains.
+                if (chunk_idx / 8) % 16 == 15 {
+                    Timer::after_millis(20).await;
+                }
             }
+            log::info!("dump done");
 
-            Timer::after_secs(2).await;
+            Timer::after_secs(3).await;
         }
     };
 

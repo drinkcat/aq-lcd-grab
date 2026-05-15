@@ -17,6 +17,7 @@ cortex-m-rt = "0.7"
 panic-halt = "1.0"
 log = "0.4"
 static_cell = "2.1"
+heapless = "0.9"
 
 [profile.release]
 debug = true

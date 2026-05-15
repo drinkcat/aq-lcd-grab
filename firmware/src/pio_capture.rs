@@ -29,18 +29,21 @@ pub type Sample = u32;
 
 /// Extract the 16 data bits.
 #[inline]
+#[allow(dead_code)]
 pub fn data(s: Sample) -> u16 {
     (s & 0xFFFF) as u16
 }
 
 /// Extract D/C (1 = data, 0 = command).
 #[inline]
+#[allow(dead_code)]
 pub fn dc(s: Sample) -> bool {
     (s >> 16) & 1 != 0
 }
 
 /// Extract CS (1 = deasserted, 0 = asserted).
 #[inline]
+#[allow(dead_code)]
 pub fn cs(s: Sample) -> bool {
     (s >> 17) & 1 != 0
 }
@@ -75,7 +78,7 @@ impl<'d> Capture<'d> {
         let prg = pio_asm!(
             ".wrap_target",
             "    wait 0 gpio 18", // WR goes low (host starts writing)
-            "    wait 1 gpio 18", // WR returns high — data is valid now
+            "    wait 1 gpio 18", // WR returns high — data is latched, sample now
             "    in pins, 18",    // sample {CS, DC, DB15..DB0}
             ".wrap",
         );
@@ -114,8 +117,10 @@ impl<'d> Capture<'d> {
             // Autopush after 18 bits — every WR rising edge emits one FIFO word.
             auto_fill: true,
             threshold: 18,
-            // ISR shifts right, so bit 0 of "in pins" lands in bit 0 of ISR.
-            direction: ShiftDirection::Right,
+            // ISR shifts left: `in pins, 18` puts pin_base+0 (DB0) at ISR bit 0,
+            // pin_base+17 (CS) at ISR bit 17. (With Right, bits land in 14..31
+            // of the 32-bit pushed word — confusing for downstream decode.)
+            direction: ShiftDirection::Left,
         };
         // Default clock divider = 1 -> PIO runs at sys_clk (150 MHz on RP2350).
         // WR period is ~1.5 µs, our loop body is 3 instructions = 20 ns. Plenty.
