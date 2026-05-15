@@ -10,7 +10,7 @@
 //! bits of a 16-bit bus word, so a SET_COLUMN_ADDRESS transaction is
 //! 4 *words*, not 4 *bytes*. MEMORY_WRITE pixels are 16-bit RGB565.
 
-use crate::decoder::Transaction;
+use crate::wire::Frame;
 
 pub const WIDTH: u16 = 320;
 pub const HEIGHT: u16 = 480;
@@ -38,7 +38,7 @@ impl Framebuffer {
         }
     }
 
-    pub fn apply(&mut self, tx: &Transaction) {
+    pub fn apply(&mut self, tx: &Frame) {
         match tx.cmd {
             0x2A => {
                 if tx.data.len() >= 4 {
@@ -87,9 +87,11 @@ impl Framebuffer {
     }
 
     /// Convert the RGB565 framebuffer to RGBA8 for egui display.
+    /// The panel scans left-to-right top-to-bottom but is physically
+    /// mounted upside-down in the target, so we rotate 180° here.
     pub fn to_rgba8(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 4);
-        for &px in &self.pixels {
+        for &px in self.pixels.iter().rev() {
             let r5 = ((px >> 11) & 0x1F) as u8;
             let g6 = ((px >> 5) & 0x3F) as u8;
             let b5 = (px & 0x1F) as u8;
