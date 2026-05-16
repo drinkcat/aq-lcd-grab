@@ -19,6 +19,7 @@ egui = "0.34"
 serialport = "4.9"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
 
 [profile.release]
 debug = true

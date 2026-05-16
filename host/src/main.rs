@@ -84,6 +84,10 @@ const LOG_CAP: usize = 128;
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // The reader thread blocks in serial I/O and would otherwise keep
+    // the process alive through Ctrl-C. Hard-exit on SIGINT.
+    ctrlc::set_handler(|| std::process::exit(0))?;
+
     let shared = Arc::new(Mutex::new(Shared {
         fb: Framebuffer::new(),
         log: std::collections::VecDeque::with_capacity(LOG_CAP),
@@ -109,7 +113,10 @@ fn main() -> anyhow::Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
-    Ok(())
+    // The reader thread is parked in a blocking serial read with a 60 s
+    // timeout. Returning here would wait for it (which makes Ctrl-C feel
+    // unresponsive) — exit hard instead.
+    std::process::exit(0);
 }
 
 fn reader_loop(
