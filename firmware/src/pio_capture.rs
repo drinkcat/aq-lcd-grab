@@ -87,8 +87,15 @@ impl<'d> RingCapture<'d> {
 
         let prg = pio_asm!(
             ".wrap_target",
-            "    wait 0 gpio 18",
+            // Falling-edge sampling. After WR transitions high→low we
+            // re-check that WR is actually still low — filters any
+            // spurious mid-cycle dips on WR (e.g. ringing on the
+            // rising edge of the previous pulse) that would otherwise
+            // produce a phantom sample.
+            "start:",
             "    wait 1 gpio 18",
+            "    wait 0 gpio 18 [2]",
+            "    jmp pin, start",
             "    in pins, 18",
             ".wrap",
         );
@@ -115,12 +122,13 @@ impl<'d> RingCapture<'d> {
             common.make_pio_pin(pins.dc),
             common.make_pio_pin(pins.cs),
         ];
-        let _wr = common.make_pio_pin(pins.wr);
+        let wr_pin = common.make_pio_pin(pins.wr);
         let p_refs: [&_; 18] = core::array::from_fn(|i| &p_in[i]);
 
         let mut cfg = Config::default();
         cfg.use_program(&loaded, &[]);
         cfg.set_in_pins(&p_refs);
+        cfg.set_jmp_pin(&wr_pin);
         cfg.shift_in = ShiftConfig {
             auto_fill: true,
             threshold: 18,

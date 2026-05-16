@@ -22,7 +22,7 @@
 pub const MAGIC_0: u8 = 0xAA;
 pub const MAGIC_1: u8 = 0x55;
 
-pub const CMD_LOG: u8 = 0xFF;
+pub const CMD_LOG: u8 = 0xFE;
 pub const CMD_MEMORY_WRITE_CONTINUE: u8 = 0x3C;
 
 /// High bit of the `count` field: data is RLE-encoded `(len, value)` pairs.

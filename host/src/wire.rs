@@ -13,7 +13,7 @@ use std::io::{self, Read};
 
 pub const MAGIC_0: u8 = 0xAA;
 pub const MAGIC_1: u8 = 0x55;
-pub const CMD_LOG: u8 = 0xFF;
+pub const CMD_LOG: u8 = 0xFE;
 pub const RLE_FLAG: u16 = 0x8000;
 pub const COUNT_MASK: u16 = 0x7FFF;
 
