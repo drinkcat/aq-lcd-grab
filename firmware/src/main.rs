@@ -57,8 +57,8 @@ static mut RING_BUF: RingBuf = RingBuf([0; RING_LEN]);
 const DRAIN_CHUNK: usize = 1024;
 
 /// Channel from the capture task to the USB sender.
-type TxChannel = Channel<ThreadModeRawMutex, Transaction, 8>;
-type TxTx<'a> = Sender<'a, ThreadModeRawMutex, Transaction, 8>;
+type TxChannel = Channel<ThreadModeRawMutex, Transaction, 32>;
+type TxTx<'a> = Sender<'a, ThreadModeRawMutex, Transaction, 32>;
 
 static TX_CHANNEL: TxChannel = Channel::new();
 
@@ -164,10 +164,47 @@ async fn main(_spawner: Spawner) {
 
     let sender_fut = async {
         sender.wait_connection().await;
+        let mut buf = [0u8; 64];
+        let mut fill: usize = 0;
+        // Cap how many transactions we batch before flushing. Keeps
+        // viewer latency bounded during sustained tile bursts when the
+        // channel always has more ready — without it the inner loop
+        // could starve the flush indefinitely.
+        const BATCH_CAP: u32 = 32;
         loop {
             let tx = TX_CHANNEL.receive().await;
-            if let Err(_e) = send_frame(&mut sender, &tx).await {
-                // Host disconnected; wait for reconnect.
+            if let Err(_) =
+                encode_frame(&mut sender, &mut buf, &mut fill, &tx).await
+            {
+                sender.wait_connection().await;
+                fill = 0;
+                continue;
+            }
+            let mut batched: u32 = 1;
+            while batched < BATCH_CAP {
+                match TX_CHANNEL.try_receive() {
+                    Ok(tx) => {
+                        if let Err(_) =
+                            encode_frame(&mut sender, &mut buf, &mut fill, &tx)
+                                .await
+                        {
+                            sender.wait_connection().await;
+                            fill = 0;
+                            break;
+                        }
+                        batched += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+            // Flush the tail. If we just emitted exactly 64 bytes the
+            // host needs a ZLP to terminate the transfer.
+            if fill > 0 {
+                if let Err(_) = sender.write_packet(&buf[..fill]).await {
+                    sender.wait_connection().await;
+                }
+                fill = 0;
+            } else if let Err(_) = sender.write_packet(&[]).await {
                 sender.wait_connection().await;
             }
         }
@@ -235,39 +272,40 @@ async fn main(_spawner: Spawner) {
     join3(usb_fut, sender_fut, capture_fut).await;
 }
 
-async fn send_frame<'d, D: embassy_usb::driver::Driver<'d>>(
+/// Encode one transaction into the rolling 64-byte USB packet buffer.
+///
+/// Flushes full 64-byte packets as the buffer fills, but leaves any
+/// trailing < 64 bytes in `*fill` so the caller can pack more
+/// transactions into the same wire packet. Magic 0xAA55 at the start
+/// of each tx self-delimits so back-to-back packing is unambiguous.
+///
+/// Memory-write frames whose data is all one value are RLE-encoded
+/// (one (length, value) pair, 4 bytes) instead of sent raw.
+async fn encode_frame<'d, D: embassy_usb::driver::Driver<'d>>(
     sender: &mut embassy_usb::class::cdc_acm::Sender<'d, D>,
+    buf: &mut [u8; 64],
+    fill: &mut usize,
     tx: &Transaction,
 ) -> Result<(), EndpointError> {
-    // Heuristic: if this is a memory-write frame and all data words are
-    // equal, send a single RLE pair (4 bytes) instead of the raw words.
-    // Big background fills compress from ~8 KB per frame to ~9 bytes.
     let is_mw = tx.cmd == 0x2C || tx.cmd == proto::CMD_MEMORY_WRITE_CONTINUE;
     let uniform = is_mw
         && !tx.data.is_empty()
         && tx.data.len() <= u16::MAX as usize
         && tx.data.iter().all(|&w| w == tx.data[0]);
 
-    // CDC packet size is 64. We coalesce header + payload, then chunk.
-    let mut buf = [0u8; 64];
-    let mut fill = 0;
-
     macro_rules! push {
         ($byte:expr) => {{
-            buf[fill] = $byte;
-            fill += 1;
-            if fill == 64 {
-                sender.write_packet(&buf).await?;
-                fill = 0;
+            buf[*fill] = $byte;
+            *fill += 1;
+            if *fill == 64 {
+                sender.write_packet(buf).await?;
+                *fill = 0;
             }
         }};
     }
 
-    let payload_bytes: usize;
     if uniform {
-        // RLE encoding: 1 pair = 2 words = 4 bytes.
-        let header =
-            proto::encode_header(tx.cmd, 2u16 | proto::RLE_FLAG);
+        let header = proto::encode_header(tx.cmd, 2u16 | proto::RLE_FLAG);
         for &b in &header {
             push!(b);
         }
@@ -277,7 +315,6 @@ async fn send_frame<'d, D: embassy_usb::driver::Driver<'d>>(
             push!((w & 0xFF) as u8);
             push!((w >> 8) as u8);
         }
-        payload_bytes = 4;
     } else {
         let count = tx.data.len() as u16;
         let header = proto::encode_header(tx.cmd, count);
@@ -288,18 +325,6 @@ async fn send_frame<'d, D: embassy_usb::driver::Driver<'d>>(
             push!((w & 0xFF) as u8);
             push!((w >> 8) as u8);
         }
-        payload_bytes = 2 * count as usize;
-    }
-
-    if fill > 0 {
-        sender.write_packet(&buf[..fill]).await?;
-    }
-
-    // USB CDC: a transfer ending exactly on a packet boundary needs a
-    // ZLP to terminate. Avoid the ambiguity by emitting a short packet
-    // whenever the total length is a multiple of 64.
-    if (5 + payload_bytes).is_multiple_of(64) {
-        sender.write_packet(&[]).await?;
     }
 
     Ok(())
