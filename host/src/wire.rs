@@ -4,8 +4,8 @@
 //!
 //!     [0xAA] [0x55]            magic
 //!     [cmd  u8 ]                command byte (0xFF = log line)
-//!     [count u16 LE]            number of u16 data words
-//!     [data  u16 LE × count]    payload
+//!     [count u16 LE]            data-word count, high bit = RLE flag
+//!     [data  u16 LE × N]        payload (raw, or (len, value) pairs)
 //!
 //! On stream resync, we scan for the magic prefix and resume.
 
@@ -14,6 +14,8 @@ use std::io::{self, Read};
 pub const MAGIC_0: u8 = 0xAA;
 pub const MAGIC_1: u8 = 0x55;
 pub const CMD_LOG: u8 = 0xFF;
+pub const RLE_FLAG: u16 = 0x8000;
+pub const COUNT_MASK: u16 = 0x7FFF;
 
 #[derive(Clone, Debug)]
 pub struct Frame {
@@ -22,6 +24,8 @@ pub struct Frame {
 }
 
 /// Read one frame from `r`. Re-syncs by scanning for the magic prefix.
+/// RLE-encoded frames are expanded into raw pixel words before return,
+/// so downstream code sees a uniform `data: Vec<u16>` payload either way.
 pub fn read_frame<R: Read>(r: &mut R) -> io::Result<Frame> {
     // Find the magic.
     let mut prev = 0u8;
@@ -40,14 +44,28 @@ pub fn read_frame<R: Read>(r: &mut R) -> io::Result<Frame> {
 
     let mut count_buf = [0u8; 2];
     r.read_exact(&mut count_buf)?;
-    let count = u16::from_le_bytes(count_buf) as usize;
+    let count_raw = u16::from_le_bytes(count_buf);
+    let is_rle = count_raw & RLE_FLAG != 0;
+    let count = (count_raw & COUNT_MASK) as usize;
 
-    let mut data = Vec::with_capacity(count);
+    let mut raw = Vec::with_capacity(count);
     let mut word_buf = [0u8; 2];
     for _ in 0..count {
         r.read_exact(&mut word_buf)?;
-        data.push(u16::from_le_bytes(word_buf));
+        raw.push(u16::from_le_bytes(word_buf));
     }
+
+    let data = if is_rle {
+        let mut out = Vec::new();
+        for pair in raw.chunks_exact(2) {
+            let len = pair[0] as usize;
+            let value = pair[1];
+            out.resize(out.len() + len, value);
+        }
+        out
+    } else {
+        raw
+    };
 
     Ok(Frame { cmd, data })
 }

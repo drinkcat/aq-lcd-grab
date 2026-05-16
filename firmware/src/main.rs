@@ -239,13 +239,16 @@ async fn send_frame<'d, D: embassy_usb::driver::Driver<'d>>(
     sender: &mut embassy_usb::class::cdc_acm::Sender<'d, D>,
     tx: &Transaction,
 ) -> Result<(), EndpointError> {
-    // Header: magic[0xAA, 0x55] + cmd + count (u16 LE) = 5 bytes.
-    let count = tx.data.len() as u16;
-    let header = proto::encode_header(tx.cmd, count);
+    // Heuristic: if this is a memory-write frame and all data words are
+    // equal, send a single RLE pair (4 bytes) instead of the raw words.
+    // Big background fills compress from ~8 KB per frame to ~9 bytes.
+    let is_mw = tx.cmd == 0x2C || tx.cmd == proto::CMD_MEMORY_WRITE_CONTINUE;
+    let uniform = is_mw
+        && !tx.data.is_empty()
+        && tx.data.len() <= u16::MAX as usize
+        && tx.data.iter().all(|&w| w == tx.data[0]);
 
     // CDC packet size is 64. We coalesce header + payload, then chunk.
-    // Worst case: header (5) + 4096 words (8192 bytes) = 8197 bytes.
-    // That's 129 packets of 64 bytes, ~10 ms over CDC at 12 Mbps.
     let mut buf = [0u8; 64];
     let mut fill = 0;
 
@@ -260,27 +263,42 @@ async fn send_frame<'d, D: embassy_usb::driver::Driver<'d>>(
         }};
     }
 
-    for &b in &header {
-        push!(b);
+    let payload_bytes: usize;
+    if uniform {
+        // RLE encoding: 1 pair = 2 words = 4 bytes.
+        let header =
+            proto::encode_header(tx.cmd, 2u16 | proto::RLE_FLAG);
+        for &b in &header {
+            push!(b);
+        }
+        let run_len = tx.data.len() as u16;
+        let value = tx.data[0];
+        for &w in &[run_len, value] {
+            push!((w & 0xFF) as u8);
+            push!((w >> 8) as u8);
+        }
+        payload_bytes = 4;
+    } else {
+        let count = tx.data.len() as u16;
+        let header = proto::encode_header(tx.cmd, count);
+        for &b in &header {
+            push!(b);
+        }
+        for &w in &tx.data {
+            push!((w & 0xFF) as u8);
+            push!((w >> 8) as u8);
+        }
+        payload_bytes = 2 * count as usize;
     }
-    for &w in &tx.data {
-        let lo = (w & 0xFF) as u8;
-        let hi = (w >> 8) as u8;
-        push!(lo);
-        push!(hi);
-    }
+
     if fill > 0 {
         sender.write_packet(&buf[..fill]).await?;
     }
 
-    // USB CDC spec: a transfer ending exactly on a packet boundary needs
-    // a zero-length packet to terminate. Avoid that ambiguity by always
-    // sending a short packet at the end if we just sent a full one.
-    // (5 + 2N is odd when N is even and even when N is odd; we hit 64
-    // boundary only when (5 + 2N) % 64 == 0, i.e. N ∈ {30, 62, 94, ...}.
-    // Cheaper to always emit a short packet here — write_packet with 0
-    // bytes sends a ZLP.)
-    if (5 + 2 * count as usize).is_multiple_of(64) {
+    // USB CDC: a transfer ending exactly on a packet boundary needs a
+    // ZLP to terminate. Avoid the ambiguity by emitting a short packet
+    // whenever the total length is a multiple of 64.
+    if (5 + payload_bytes).is_multiple_of(64) {
         sender.write_packet(&[]).await?;
     }
 
