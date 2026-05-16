@@ -77,15 +77,16 @@ impl Decoder {
         let tx = self.current.as_mut()?;
 
         if tx.data.push(s.data).is_err() {
-            // Capacity reached. Emit current chunk and start a
-            // MEMORY_WRITE_CONTINUE so the host can chain pixels.
-            let mut next = Transaction::new(CMD_MEMORY_WRITE_CONTINUE);
-            // The new sample belongs to the next chunk.
+            // Capacity reached. Chain as MEMORY_WRITE_CONTINUE for memory
+            // writes; for any other command, keep the original cmd so the
+            // host doesn't mistake an orphan DC=1 burst (e.g. samples
+            // captured after a missed 0x2C boundary) for valid pixels.
+            let cont_cmd = match tx.cmd {
+                MEMORY_WRITE | CMD_MEMORY_WRITE_CONTINUE => CMD_MEMORY_WRITE_CONTINUE,
+                other => other,
+            };
+            let mut next = Transaction::new(cont_cmd);
             let _ = next.data.push(s.data);
-            // Only chain for memory-write commands; for anything else,
-            // overflowing means we'd be lying about the protocol — but
-            // non-MW transactions are tiny so it shouldn't happen.
-            let _ = MEMORY_WRITE; // referenced for documentation
             return self.current.replace(next);
         }
 

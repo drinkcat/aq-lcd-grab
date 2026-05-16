@@ -41,6 +41,10 @@ pub struct RingCapture<'d> {
     log2_len: u8,
     /// Next sample index we will read out.
     read_pos: u32,
+    /// Monotonic count of samples we know the writer dropped on us.
+    /// Saturates at u32::MAX (which would be >4 billion samples, so
+    /// practically unbounded).
+    dropped_samples: u32,
 }
 
 impl<'d> RingCapture<'d> {
@@ -178,6 +182,7 @@ impl<'d> RingCapture<'d> {
             base: buf.as_mut_ptr(),
             log2_len,
             read_pos: 0,
+            dropped_samples: 0,
         }
     }
 
@@ -201,14 +206,35 @@ impl<'d> RingCapture<'d> {
     }
 
     /// Pop up to `max` samples into `out`. Returns the count actually copied.
-    /// If the ring has overrun (writer has lapped the reader), the oldest
-    /// samples are silently dropped — the caller can detect this by
-    /// noticing a decreased `available()` mid-loop, but for our PoC we
-    /// just consume what's there.
+    ///
+    /// Overrun handling: we can't directly tell from modular write/read
+    /// positions whether the writer lapped us — after a full lap of
+    /// `len` samples, `(w - r) & mask` is back to 0, indistinguishable
+    /// from "no new data". So we use the buffer fill level as a
+    /// high-water proxy: if at any drain `available()` exceeds 7/8 of
+    /// the ring, we're at imminent risk of (or already past) overrun.
+    /// In that case we count the unread tail as dropped, and resync
+    /// `read_pos` to one slot past the writer — which is the oldest
+    /// still-valid sample (about to be overwritten last, in `len - 1`
+    /// more writes). This loses at most 1 sample of valid data but
+    /// guarantees we never read across an overrun boundary.
     pub fn drain(&mut self, out: &mut [Sample]) -> usize {
+        let mask = self.len_mask();
+        let len = 1u32 << self.log2_len;
+        let w = self.write_pos();
+        let fill = w.wrapping_sub(self.read_pos) & mask;
+
+        if fill >= (len / 8) * 7 {
+            // Account everything we hadn't yet read as dropped (the
+            // writer almost certainly clobbered an unknown portion of
+            // it). Resync to the slot just past `w`, i.e. the oldest
+            // valid sample — that slot will be overwritten last.
+            self.dropped_samples = self.dropped_samples.saturating_add(fill);
+            self.read_pos = w.wrapping_add(1) & mask;
+        }
+
         let avail = self.available() as usize;
         let n = avail.min(out.len());
-        let mask = self.len_mask();
         for (i, slot) in out.iter_mut().take(n).enumerate() {
             let idx = (self.read_pos.wrapping_add(i as u32)) & mask;
             // SAFETY: idx < len, base is valid for `len` samples.
@@ -216,6 +242,12 @@ impl<'d> RingCapture<'d> {
         }
         self.read_pos = self.read_pos.wrapping_add(n as u32) & mask;
         n
+    }
+
+    /// Take the count of samples lost to ring overrun since the last
+    /// call. Resets the internal counter.
+    pub fn take_dropped(&mut self) -> u32 {
+        core::mem::replace(&mut self.dropped_samples, 0)
     }
 }
 

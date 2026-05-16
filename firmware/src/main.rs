@@ -43,10 +43,12 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 ];
 
 // Ring buffer: power-of-2 sample count, byte-size also power-of-2,
-// aligned to its size in bytes. 1024 samples × 4 B = 4096 B (ring_size=12).
-// 4 KB alignment is well within what rustc/lld will honour for statics.
-const RING_LEN: usize = 1024;
-#[repr(align(4096))]
+// aligned to its size in bytes. 8192 samples × 4 B = 32768 B
+// (ring_size=15, which is the RP2350 maximum). Each pixel of an 8080
+// bus transfer is one sample, so this buys ~8K samples (~50 ms at 200
+// kHz bus rate, or ~400 µs at 20 MHz) of slack while USB CDC drains.
+const RING_LEN: usize = 8192;
+#[repr(align(32768))]
 struct RingBuf([RawSample; RING_LEN]);
 static mut RING_BUF: RingBuf = RingBuf([0; RING_LEN]);
 
@@ -179,8 +181,44 @@ async fn main(_spawner: Spawner) {
         let mut chunk = [0u32; DRAIN_CHUNK];
         let mut idle_ticks: u32 = 0;
         loop {
-            let n = capture.drain(&mut chunk);
-            if n == 0 {
+            // Drain everything available before sleeping, not just one
+            // DRAIN_CHUNK. The ring is much larger than the chunk, so
+            // capping at DRAIN_CHUNK per polling tick would needlessly
+            // give back our headroom under sustained traffic.
+            let mut total = 0usize;
+            loop {
+                let n = capture.drain(&mut chunk);
+                if n == 0 {
+                    break;
+                }
+                total += n;
+                for &raw in &chunk[..n] {
+                    let sample = DecSample::from_raw(raw);
+                    if let Some(tx) = decoder.feed(sample) {
+                        TX_CHANNEL.send(tx).await;
+                    }
+                }
+            }
+            let dropped = capture.take_dropped();
+            if dropped > 0 {
+                let mut msg = heapless::String::<32>::new();
+                use core::fmt::Write as _;
+                let _ = write!(msg, "overrun: dropped {dropped}");
+                // Use blocking send: the overrun message is the whole
+                // point of the detection, and try_send silently drops
+                // it exactly when the channel is full — which is when
+                // overruns happen.
+                let mut tx = Transaction::new(proto::CMD_LOG);
+                for chunk in msg.as_bytes().chunks(2) {
+                    let lo = chunk[0];
+                    let hi = if chunk.len() > 1 { chunk[1] } else { 0 };
+                    if tx.data.push(u16::from_le_bytes([lo, hi])).is_err() {
+                        break;
+                    }
+                }
+                TX_CHANNEL.send(tx).await;
+            }
+            if total == 0 {
                 idle_ticks = idle_ticks.wrapping_add(1);
                 if idle_ticks.is_multiple_of(2500) {
                     // Every ~5 s of pure idle, breadcrumb so the host
@@ -188,14 +226,8 @@ async fn main(_spawner: Spawner) {
                     log_line(TX_CHANNEL.sender(), "idle");
                 }
                 Timer::after_millis(2).await;
-                continue;
-            }
-            idle_ticks = 0;
-            for &raw in &chunk[..n] {
-                let sample = DecSample::from_raw(raw);
-                if let Some(tx) = decoder.feed(sample) {
-                    TX_CHANNEL.send(tx).await;
-                }
+            } else {
+                idle_ticks = 0;
             }
         }
     };
