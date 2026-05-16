@@ -25,6 +25,16 @@ pub struct Framebuffer {
     pub cursor_row: u16,
 }
 
+/// A single MEMORY_WRITE that exactly fills the active window — a candidate
+/// glyph/sprite update worth dumping for offline analysis.
+pub struct WindowWrite {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    pub pixels: Vec<u16>,
+}
+
 impl Framebuffer {
     pub fn new() -> Self {
         Self {
@@ -38,7 +48,10 @@ impl Framebuffer {
         }
     }
 
-    pub fn apply(&mut self, tx: &Frame) {
+    /// Apply a captured transaction to the framebuffer. If the transaction
+    /// is a 0x2C that exactly fills the active window in one go, return a
+    /// `WindowWrite` describing it (handy for dumping individual glyphs).
+    pub fn apply(&mut self, tx: &Frame) -> Option<WindowWrite> {
         match tx.cmd {
             0x2A => {
                 if tx.data.len() >= 4 {
@@ -49,6 +62,7 @@ impl Framebuffer {
                     self.cursor_col = cs;
                     self.cursor_row = self.row_start;
                 }
+                None
             }
             0x2B => {
                 if tx.data.len() >= 4 {
@@ -59,6 +73,7 @@ impl Framebuffer {
                     self.cursor_col = self.col_start;
                     self.cursor_row = rs;
                 }
+                None
             }
             0x2C | 0x3C => {
                 // MEMORY_WRITE or MEMORY_WRITE_CONTINUE.
@@ -81,8 +96,26 @@ impl Framebuffer {
                         }
                     }
                 }
+
+                if tx.cmd == 0x2C
+                    && self.col_end >= self.col_start
+                    && self.row_end >= self.row_start
+                {
+                    let w = self.col_end - self.col_start + 1;
+                    let h = self.row_end - self.row_start + 1;
+                    if tx.data.len() == w as usize * h as usize {
+                        return Some(WindowWrite {
+                            x: self.col_start,
+                            y: self.row_start,
+                            w,
+                            h,
+                            pixels: tx.data.clone(),
+                        });
+                    }
+                }
+                None
             }
-            _ => {}
+            _ => None,
         }
     }
 

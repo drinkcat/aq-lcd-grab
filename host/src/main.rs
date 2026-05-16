@@ -1,15 +1,19 @@
+mod decoder;
 mod framebuffer;
 mod wire;
 
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clap::Parser;
 use eframe::egui;
-use framebuffer::Framebuffer;
+use framebuffer::{Framebuffer, WindowWrite};
 use wire::{CMD_LOG, Frame, log_text, read_frame};
 
 #[derive(Parser, Debug)]
@@ -23,6 +27,12 @@ struct Args {
     /// Raw binary frames as emitted by the firmware.
     #[arg(short, long)]
     replay: Option<String>,
+
+    /// Directory to dump per-glyph PNGs into. One PNG is written each time
+    /// a MEMORY_WRITE exactly fills its addressed window; identical
+    /// (window, content) pairs are deduplicated.
+    #[arg(long)]
+    dump_dir: Option<PathBuf>,
 }
 
 /// ILI9488 command names.
@@ -71,6 +81,9 @@ fn cmd_name(cmd: u8) -> &'static str {
 struct Shared {
     fb: Framebuffer,
     log: std::collections::VecDeque<LogEntry>,
+    /// Latest decoded value per named row (see decoder::ROWS). Updated
+    /// from the reader thread; rendered in the top panel.
+    values: std::collections::BTreeMap<&'static str, String>,
 }
 
 #[derive(Clone)]
@@ -91,13 +104,20 @@ fn main() -> anyhow::Result<()> {
     let shared = Arc::new(Mutex::new(Shared {
         fb: Framebuffer::new(),
         log: std::collections::VecDeque::with_capacity(LOG_CAP),
+        values: std::collections::BTreeMap::new(),
     }));
+
+    if let Some(dir) = &args.dump_dir {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating dump dir {}", dir.display()))?;
+    }
 
     let reader_shared = Arc::clone(&shared);
     let port = args.port.clone();
     let replay = args.replay.clone();
+    let dump_dir = args.dump_dir.clone();
     thread::spawn(move || {
-        if let Err(e) = reader_loop(port, replay, reader_shared) {
+        if let Err(e) = reader_loop(port, replay, dump_dir, reader_shared) {
             eprintln!("reader thread exited: {e:#}");
         }
     });
@@ -122,6 +142,7 @@ fn main() -> anyhow::Result<()> {
 fn reader_loop(
     port: String,
     replay: Option<String>,
+    dump_dir: Option<PathBuf>,
     shared: Arc<Mutex<Shared>>,
 ) -> anyhow::Result<()> {
     let mut reader: Box<dyn Read + Send> = if let Some(path) = replay {
@@ -129,29 +150,122 @@ fn reader_loop(
         Box::new(BufReader::new(f))
     } else {
         let port_handle = serialport::new(&port, 115_200)
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_millis(250))
             .open()
             .with_context(|| format!("opening serial port {port}"))?;
         eprintln!("reader: opened {port}");
         Box::new(BufReader::new(port_handle))
     };
 
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut dec = decoder::Decoder::new();
+
     loop {
         let frame = match read_frame(&mut reader) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Ok(f) => Some(f),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => None,
             Err(e) => return Err(e.into()),
         };
         let mut g = shared.lock().unwrap();
-        if frame.cmd == CMD_LOG {
-            let text = log_text(&frame.data);
-            println!("• {text}");
-            push_log(&mut g.log, LogEntry::Msg(text));
+        if let Some(frame) = frame {
+            if frame.cmd == CMD_LOG {
+                let text = log_text(&frame.data);
+                println!("• {text}");
+                push_log(&mut g.log, LogEntry::Msg(text));
+            } else {
+                println!("{}", format_tx(&frame));
+                let win = g.fb.apply(&frame);
+                push_log(&mut g.log, LogEntry::Tx(frame));
+                if let Some(win) = win.as_ref() {
+                    let out = dec.ingest(win);
+                    if let Some(m) = out.glyph {
+                        let msg = format!(
+                            "→ {}x{}@({:03},{:03}) = {:?}",
+                            m.w, m.h, m.disp_x, m.disp_y, m.label
+                        );
+                        println!("{msg}");
+                        push_log(&mut g.log, LogEntry::Msg(msg));
+                    }
+                    for r in out.completed_rows {
+                        let msg = format!("= {}: {:?}", r.name, r.value);
+                        println!("{msg}");
+                        push_log(&mut g.log, LogEntry::Msg(msg.clone()));
+                        g.values.insert(r.name, r.value);
+                    }
+                }
+                if let (Some(dir), Some(win)) = (dump_dir.as_ref(), win) {
+                    dump_window(dir, &win, &mut seen);
+                }
+            }
         } else {
-            println!("{}", format_tx(&frame));
-            g.fb.apply(&frame);
-            push_log(&mut g.log, LogEntry::Tx(frame));
+            // Idle pump: settle any rows that have stopped updating.
+            for r in dec.flush() {
+                let msg = format!("= {}: {:?}", r.name, r.value);
+                println!("{msg}");
+                push_log(&mut g.log, LogEntry::Msg(msg.clone()));
+                g.values.insert(r.name, r.value);
+            }
         }
+        drop(g);
+    }
+}
+
+/// Minimum window dimension considered a glyph worth keeping. Filters
+/// out thin status bars and 1-pixel-wide animation slivers.
+const GLYPH_MIN_DIM: u16 = 8;
+
+/// Save a per-window PNG into `dir`. Each pixel is reduced to a 1-bit
+/// foreground/background mask (majority pixel value = background), so the
+/// same digit collapses to one file across red/green/white backgrounds.
+/// Dedup key is (size, mask) — position is recorded in the filename only.
+fn dump_window(dir: &Path, win: &WindowWrite, seen: &mut HashSet<u64>) {
+    if win.w < GLYPH_MIN_DIM || win.h < GLYPH_MIN_DIM {
+        return;
+    }
+
+    let bg = win.pixels[0];
+    let mask: Vec<bool> = win.pixels.iter().map(|&p| p != bg).collect();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    win.w.hash(&mut hasher);
+    win.h.hash(&mut hasher);
+    for &m in &mask {
+        m.hash(&mut hasher);
+    }
+    let key = hasher.finish();
+    if !seen.insert(key) {
+        return;
+    }
+
+    let disp_x = framebuffer::WIDTH.saturating_sub(win.x + win.w);
+    let disp_y = framebuffer::HEIGHT.saturating_sub(win.y + win.h);
+
+    let mut rgba = Vec::with_capacity(mask.len() * 4);
+    for &m in mask.iter().rev() {
+        let v = if m { 0xFF } else { 0 };
+        rgba.push(v);
+        rgba.push(v);
+        rgba.push(v);
+        rgba.push(0xFF);
+    }
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let name = format!(
+        "{}x{}_{:03}_{:03}_{}.png",
+        win.w, win.h, disp_x, disp_y, ts
+    );
+    let path = dir.join(&name);
+    match image::RgbaImage::from_raw(win.w as u32, win.h as u32, rgba) {
+        Some(img) => {
+            if let Err(e) = img.save(&path) {
+                eprintln!("dumper: save {} failed: {e}", path.display());
+            } else {
+                println!("• dumped {name}");
+            }
+        }
+        None => eprintln!("dumper: rgba buffer size mismatch"),
     }
 }
 
@@ -197,13 +311,14 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        let (rgba, w, h, log) = {
+        let (rgba, w, h, log, values) = {
             let g = self.shared.lock().unwrap();
             (
                 g.fb.to_rgba8(),
                 framebuffer::WIDTH as usize,
                 framebuffer::HEIGHT as usize,
                 g.log.iter().cloned().collect::<Vec<_>>(),
+                g.values.clone(),
             )
         };
 
@@ -218,6 +333,29 @@ impl eframe::App for App {
                 ));
             }
         }
+
+        egui::Panel::top("values").show_inside(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                if values.is_empty() {
+                    ui.weak("(no values decoded yet)");
+                }
+                for (name, v) in &values {
+                    ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.weak(*name);
+                            ui.label(
+                                egui::RichText::new(v)
+                                    .strong()
+                                    .size(22.0)
+                                    .monospace(),
+                            );
+                        });
+                    });
+                }
+            });
+            ui.add_space(4.0);
+        });
 
         egui::Panel::right("log")
             .resizable(true)

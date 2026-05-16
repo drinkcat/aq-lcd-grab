@@ -120,6 +120,7 @@ dependencies = [
  "ctrlc",
  "eframe",
  "egui",
+ "image",
  "serialport",
 ]
 
