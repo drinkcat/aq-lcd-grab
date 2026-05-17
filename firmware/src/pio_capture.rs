@@ -3,9 +3,11 @@
 //! Pin assignment (consecutive GPIOs required for `in pins, N`):
 //!
 //!     GPIO 0..=15 -> DB0..=DB15  (16-bit data bus)
-//!     GPIO 16     -> D/C (RS)     [physically wired to CS — see decoder.rs]
-//!     GPIO 17     -> CS           [physically wired to DC]
-//!     GPIO 18     -> WR (write strobe — sample trigger)
+//!     GPIO 16     -> "D/C"  — name is a guess; this is the line we use for
+//!                             8080 cmd/data framing (boundary rule in decoder.rs)
+//!     GPIO 17     -> "CS"   — name is a guess; the other 8080 control line,
+//!                             captured but not used for framing
+//!     GPIO 18     -> WR     — write strobe, sample trigger
 //!
 //! Each captured word in the RX FIFO is laid out (LSB first):
 //!
