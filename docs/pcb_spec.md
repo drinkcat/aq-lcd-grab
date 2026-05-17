@@ -55,6 +55,32 @@ Status: draft. Decisions captured below; open questions at the bottom.
   subsequent reset/crash lands back in UART boot — ESP32 reloads. This
   is the desired behavior (no flash means no persistence between power
   cycles; ESP32 is the source of truth for firmware).
+- **Runtime UART after boot:** SD2 and SD3 mux to **hardware UART0
+  (F11 alternate function)** — see datasheet GPIO bank 1 function
+  table. So once the bootrom hands off, the same two wires become a
+  stock hardware UART. No PIO state machines consumed, no extra pins
+  routed, any runtime baud rate. The bootrom uses the same pins via
+  QMI for its 1 Mbaud bit-banged UART boot, then firmware re-muxes to
+  F11 for the PL011 hardware UART.
+
+#### Tradeoff: flashless UART boot vs alternatives
+
+This adds **~6–7 s of boot latency** every power-on (1–2 s ESP32
+self-init + ~5 s UART transfer of the current ~50 kB image, growing
+linearly with firmware size). Considered alternatives:
+
+| Option | Cost delta | Boot time | Update path | Verdict |
+|---|---|---|---|---|
+| **RP2350 + UART boot (chosen)** | — | ~6–7 s | OTA on ESP32 — ESP32 holds canonical firmware, no flash programming needed | ✓ |
+| RP2354B (RP2350 + 2 MB in-package flash) | +~$0.80/board, QFN-80 (10×10 mm vs 7×7 mm) — worse for the small-board goal | ~100 ms | Need an ESP32-side flash programmer (SWD bit-bang, or UART-boot a flashing stub then write internal flash). C6 has no USB host so picotool-over-USB isn't an option. | Not worth it for our reboot pattern |
+| RP2350 + external SPI flash + stub | +~$0.20 flash + a chip, same QFN-60 | ~100 ms | Same complication as RP2354B (need flash programmer on ESP32 side) | Same downsides without the package penalty, but still adds the flash-update mechanism |
+
+**Why UART boot wins for this device:** it's plugged in and runs
+continuously; reboots are rare. The 6 s cost is paid almost never,
+and in exchange the firmware-update path is trivially "OTA the ESP32"
+with no flash-programming protocol to design. The ESP32 being the
+single source of truth for firmware also means no risk of RP2350/ESP32
+firmware-version skew.
 
 ### USB recovery access (D+/D-)
 
@@ -122,6 +148,20 @@ QSPI), so it doesn't interfere with UART boot strapping.
 - Purpose of the RP2350-side LED: independent "RP2350 is alive"
   feedback during bring-up — confirms UART boot succeeded and code is
   running even when the ESP32-side comms path is suspect.
+
+### Bring-up test points
+
+- **2× hardware UART1 test points** on RP2350 **GPIO 20 (UART1 TX)**
+  and **GPIO 21 (UART1 RX)** — F2 alternate function on those pins,
+  PL011 hardware UART. For ESP32 ↔ RP2350 comms bodging if the
+  SD2/SD3 runtime UART path turns out to have an issue, or for an
+  attached serial console during bring-up.
+- **3× additional general-purpose test points** on free RP2350 GPIOs
+  **19, 22, 23** — for any future bodging need (extra signals,
+  PIO-driven secondary UART, debug probe, etc.). Contiguous with the
+  UART pair for a tidy 5-pad cluster (GPIO 19, 20, 21, 22, 23).
+- All 5 exposed as small SMD pads or castellated pads at the board
+  edge; no headers needed.
 
 ## ESP32-C6 (Xiao) resources
 
