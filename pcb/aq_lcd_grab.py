@@ -230,9 +230,12 @@ U1 = Part("MCU_RaspberryPi_RP2350", "RP2350_60QFN",
 #                 not +3V3, despite the higher refdes — see reference)
 #   C12-C17    -> 6× 100 nF for the 6× IOVDD pins (one each)
 #   C18        -> VREG_AVDD decoupling
-# QSPI_IOVDD and USB_OTP_VDD aren't separately decoupled in RPi's design
-# (they rely on adjacent IOVDD caps), but we add dedicated caps (C19, C20)
-# to match the RP2350 datasheet's per-pin recommendation.
+# QSPI_IOVDD (pin 54) and USB_OTP_VDD (pin 53) are not separately
+# decoupled — we follow RPi's reference and rely on a nearby IOVDD cap
+# (C12-C17) being placed close enough on the PCB to bypass them too.
+# Just tie the pins to +3V3.
+U1[54] += P3V3   # QSPI_IOVDD
+U1[53] += P3V3   # USB_OTP_VDD
 
 # 6× IOVDD on +3V3, one 100 nF per pin (RPi C12–C17).
 IOVDD_PINS = [(1,  "C12", "IOVDD_1"),
@@ -243,12 +246,6 @@ IOVDD_PINS = [(1,  "C12", "IOVDD_1"),
               (45, "C17", "IOVDD_45")]
 for pad_num, ref, label in IOVDD_PINS:
     decouple(P3V3, U1[pad_num], ref, label)
-
-# QSPI_IOVDD (pin 54) and USB_OTP_VDD (pin 53) — both 3V3, 100 nF each
-# (RPi-only refdes C19 was a +3V3 USB-area 10 µF cap they didn't need;
-# we reuse C19/C20 for these extras).
-decouple(P3V3, U1[54], "C19", "QSPI_IOVDD")
-decouple(P3V3, U1[53], "C20", "USB_OTP_VDD")
 
 # VREG_AVDD (pin 46): analog supply for the internal regulator. RPi
 # inserts a 33 Ω filter resistor (R5) between 3V3 and the VREG_AVDD pin,
@@ -386,22 +383,24 @@ U1[57] += NC_QSPI_SD0
 U1[51] += USB_DM_CHIP   # USB_DM
 U1[52] += USB_DP_CHIP   # USB_DP
 
-# SWD (pins 24/25): expose on test points so we can hook a debug probe
-# during bring-up if the UART loader path ever misbehaves.
+# SWD (pins 24/25) on a 3-pin 2.54mm header. Pinout follows the Raspberry
+# Pi convention used on Pico-family boards (and the official Debug Probe):
+#   Pin 1: SWCLK
+#   Pin 2: GND
+#   Pin 3: SWDIO
+# 2.54mm pitch chosen over JST SH for easy hand-probing / pigtail use.
 SWCLK = Net("SWCLK")
 SWDIO = Net("SWDIO")
 U1[24] += SWCLK
 U1[25] += SWDIO
-TP_SWCLK = Part("Connector", "TestPoint",
-                footprint="TestPoint:TestPoint_Pad_1.0x1.0mm",
-                ref="TP1",
-                tag="TP_SWCLK")
-TP_SWCLK[1] += SWCLK
-TP_SWDIO = Part("Connector", "TestPoint",
-                footprint="TestPoint:TestPoint_Pad_1.0x1.0mm",
-                ref="TP2",
-                tag="TP_SWDIO")
-TP_SWDIO[1] += SWDIO
+
+J5 = Part("Connector", "Conn_01x03_Pin",
+          footprint="Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
+          ref="J5",
+          tag="J5_SWD_DEBUG")
+J5[1] += SWCLK
+J5[2] += GND
+J5[3] += SWDIO
 
 
 # =============================================================================
@@ -428,13 +427,12 @@ U1[37] += LED_STATUS
 # Bring-up test points: GPIO 19–23 (RP2350 pins 31, 32, 33, 34, 35).
 # 20/21 are the hardware UART1 TX/RX (F2 alt); 19/22/23 are general spare.
 # =============================================================================
-# SWD test points are TP1/TP2; bring-up GPIO test points continue at TP3+.
 GPIO_TEST_PIN_MAP = [
-    (19, 31, "TP3", "TP_GPIO19"),
-    (20, 32, "TP4", "TP_GPIO20_UART1_TX"),
-    (21, 33, "TP5", "TP_GPIO21_UART1_RX"),
-    (22, 34, "TP6", "TP_GPIO22"),
-    (23, 35, "TP7", "TP_GPIO23"),
+    (19, 31, "TP1", "TP_GPIO19"),
+    (20, 32, "TP2", "TP_GPIO20_UART1_TX"),
+    (21, 33, "TP3", "TP_GPIO21_UART1_RX"),
+    (22, 34, "TP4", "TP_GPIO22"),
+    (23, 35, "TP5", "TP_GPIO23"),
 ]
 for gpio_num, pad_num, ref, tag in GPIO_TEST_PIN_MAP:
     net = Net(f"GPIO{gpio_num}")
