@@ -138,7 +138,7 @@ aq_lcd_grab = SchLib(tool=SKIDL).add_parts(*[
         Part(**{ 'name':'LED', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'LED'}), 'ref_prefix':'D', 'fplist':[''], 'footprint':'LED_SMD:LED_0603_1608Metric', 'keywords':'LED diode', 'description':'Light emitting diode', 'datasheet':'', 'pins':[
             Pin(num='1',name='K',func=pin_types.PASSIVE,unit=1),
             Pin(num='2',name='A',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
-        Part(**{ 'name':'TestPoint', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'TestPoint'}), 'ref_prefix':'TP', 'fplist':[''], 'footprint':'TestPoint:TestPoint_Pad_1.0x1.0mm', 'keywords':'test point tp', 'description':'test point', 'datasheet':'', 'pins':[
+        Part(**{ 'name':'TestPoint', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'TestPoint'}), 'ref_prefix':'TP', 'fplist':[''], 'footprint':'test_points:TestPoint_Pad_0.5x0.5mm', 'keywords':'test point tp', 'description':'test point', 'datasheet':'', 'pins':[
             Pin(num='1',name='1',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
         Part(**{ 'name':'Conn_01x14', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'Conn_01x14'}), 'ref_prefix':'J', 'fplist':[''], 'footprint':'esp32c6:XIAO-ESP32-C6-DIP', 'keywords':'connector', 'description':'Generic connector, single row, 01x14, script generated (kicad-library-utils/schlib/autogen/connector/)', 'datasheet':'', 'pins':[
             Pin(num='1',name='Pin_1',func=pin_types.PASSIVE,unit=1),

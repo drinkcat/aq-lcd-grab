@@ -371,16 +371,26 @@ R_RUN[2] += RUN
 U1[26] += RUN
 
 # UART boot strapping (no ESP32 GPIO needed — fully hard-wired):
-#   QSPI_SS  (pin 60) -> GND   (selects BOOTSEL mode)
-#   QSPI_SD1 (pin 59) -> 1 kΩ to 3V3   (selects UART within BOOTSEL)
+#   QSPI_SS  (pin 60) -> 0 Ω to GND   (selects BOOTSEL mode)
+#   QSPI_SD1 (pin 59) -> 1 kΩ to 3V3  (selects UART within BOOTSEL)
 # The 1 kΩ value matches the RUN pull-up choice (RPi uses 1 kΩ widely).
-# QSPI_SD1 pull-up: we add this (RPi reference uses R6 for flash CS,
-# which we don't have). Refdes R20 keeps us outside RPi's R1–R10 range
-# so cross-comparison stays unambiguous.
-U1[60] += GND
+# Refdes R20/R22 keep us outside RPi's R1–R10 range so cross-comparison
+# with the reference design stays unambiguous (RPi reference uses R6
+# for the flash CS pull-up, which we don't have).
+#
+# QSPI_SS goes through a 0 Ω jumper rather than a direct GND tie so
+# the strap can be lifted (e.g. to bring the chip up without entering
+# BOOTSEL) by depopulating R22 during debug.
+QSPI_SS_STRAP = Net("QSPI_SS_STRAP")  # named so it shows on schematic + silk
+U1[60] += QSPI_SS_STRAP
+R_SS = R("0", "R22", "R_QSPI_SS_STRAP")
+R_SS[1] += QSPI_SS_STRAP
+R_SS[2] += GND
+QSPI_SD1_STRAP = Net("QSPI_SD1_STRAP")
+U1[59] += QSPI_SD1_STRAP
 R_SD1 = R("1k", "R20", "R_QSPI_SD1_PULLUP")
 R_SD1[1] += P3V3
-R_SD1[2] += U1[59]
+R_SD1[2] += QSPI_SD1_STRAP
 
 # QSPI_SD2 (pin 58) and QSPI_SD3 (pin 55) carry the 1 Mbaud UART boot
 # protocol and later re-mux to hardware UART0 for runtime ESP32 comms.
@@ -499,7 +509,7 @@ for gpio_num, pad_num, ref, tag in GPIO_TEST_PIN_MAP:
     net = Net(f"GPIO{gpio_num}")
     U1[pad_num] += net
     tp = Part("Connector", "TestPoint",
-              footprint="TestPoint:TestPoint_Pad_1.0x1.0mm",
+              footprint="test_points:TestPoint_Pad_0.5x0.5mm",
               ref=ref,
               tag=tag)
     tp[1] += net
