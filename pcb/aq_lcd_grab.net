@@ -1,0 +1,561 @@
+(export 
+  (version "D")
+  (design
+    (source "aq_lcd_grab.py")
+    (date "05/18/2026 11:34 AM")
+    (tool "SKiDL (2.2.3)")
+    (sheet
+      (number 1)
+      (name "/")
+      (tstamps "/")
+      (title_block
+        (title)
+        (company)
+        (rev)
+        (date)
+        (source "aq_lcd_grab.py")
+        (comment
+          (number "1")
+          (value ""))
+        (comment
+          (number "2")
+          (value ""))
+        (comment
+          (number "3")
+          (value ""))
+        (comment
+          (number "4")
+          (value ""))
+        (comment
+          (number "5")
+          (value ""))
+        (comment
+          (number "6")
+          (value ""))
+        (comment
+          (number "7")
+          (value ""))
+        (comment
+          (number "8")
+          (value ""))
+        (comment
+          (number "9")
+          (value "")))))
+  (components
+    (comp
+      (ref "J1")
+      (value "Conn_01x39_Socket")
+      (description "Generic connector, single row, 01x39, script generated")
+      (footprint "FH26W:FH26W39S03SHW60")
+      (fields
+        (field
+          (name "Description") "Generic connector, single row, 01x39, script generated")
+        (field
+          (name "Footprint") "FH26W:FH26W39S03SHW60")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "J1_FLEX_MAIN")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+      (libsource
+        (lib "Connector")
+        (part "Conn_01x39_Socket"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "3081374e-8779-5a97-a2e6-6d3ed489d0ae"))
+    (comp
+      (ref "J2")
+      (value "Conn_01x39_Socket")
+      (description "Generic connector, single row, 01x39, script generated")
+      (footprint "FH26W:FH26W39S03SHW60")
+      (fields
+        (field
+          (name "Description") "Generic connector, single row, 01x39, script generated")
+        (field
+          (name "Footprint") "FH26W:FH26W39S03SHW60")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "J2_FLEX_DISPLAY")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:92"))
+      (libsource
+        (lib "Connector")
+        (part "Conn_01x39_Socket"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "1ec614f5-5c02-55dc-a525-b650929baaa9")))
+  (nets
+    (net
+      (code 1)
+      (name "CS")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "16")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "24")
+        (pintype "PASSIVE")))
+    (net
+      (code 2)
+      (name "DB0")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "38")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "2")
+        (pintype "PASSIVE")))
+    (net
+      (code 3)
+      (name "DB1")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "37")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "3")
+        (pintype "PASSIVE")))
+    (net
+      (code 4)
+      (name "DB10")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "28")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "12")
+        (pintype "PASSIVE")))
+    (net
+      (code 5)
+      (name "DB11")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "27")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "13")
+        (pintype "PASSIVE")))
+    (net
+      (code 6)
+      (name "DB12")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "26")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "14")
+        (pintype "PASSIVE")))
+    (net
+      (code 7)
+      (name "DB13")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "25")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "15")
+        (pintype "PASSIVE")))
+    (net
+      (code 8)
+      (name "DB14")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "24")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "16")
+        (pintype "PASSIVE")))
+    (net
+      (code 9)
+      (name "DB15")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "23")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "17")
+        (pintype "PASSIVE")))
+    (net
+      (code 10)
+      (name "DB2")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "36")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "4")
+        (pintype "PASSIVE")))
+    (net
+      (code 11)
+      (name "DB3")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "35")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "5")
+        (pintype "PASSIVE")))
+    (net
+      (code 12)
+      (name "DB4")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "34")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "6")
+        (pintype "PASSIVE")))
+    (net
+      (code 13)
+      (name "DB5")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "33")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "7")
+        (pintype "PASSIVE")))
+    (net
+      (code 14)
+      (name "DB6")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "32")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "8")
+        (pintype "PASSIVE")))
+    (net
+      (code 15)
+      (name "DB7")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "31")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "9")
+        (pintype "PASSIVE")))
+    (net
+      (code 16)
+      (name "DB8")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "30")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "10")
+        (pintype "PASSIVE")))
+    (net
+      (code 17)
+      (name "DB9")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "29")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "11")
+        (pintype "PASSIVE")))
+    (net
+      (code 18)
+      (name "DC")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "17")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "23")
+        (pintype "PASSIVE")))
+    (net
+      (code 19)
+      (name "GND_1")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "39")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "1")
+        (pintype "PASSIVE")))
+    (net
+      (code 20)
+      (name "GND_18")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "22")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "18")
+        (pintype "PASSIVE")))
+    (net
+      (code 21)
+      (name "GND_19")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "21")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "19")
+        (pintype "PASSIVE")))
+    (net
+      (code 22)
+      (name "P20_RD")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "20")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "20")
+        (pintype "PASSIVE")))
+    (net
+      (code 23)
+      (name "P21")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "19")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "21")
+        (pintype "PASSIVE")))
+    (net
+      (code 24)
+      (name "P25")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "15")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "25")
+        (pintype "PASSIVE")))
+    (net
+      (code 25)
+      (name "P26")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "14")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "26")
+        (pintype "PASSIVE")))
+    (net
+      (code 26)
+      (name "P27")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "13")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "27")
+        (pintype "PASSIVE")))
+    (net
+      (code 27)
+      (name "P28")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "12")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "28")
+        (pintype "PASSIVE")))
+    (net
+      (code 28)
+      (name "P29")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "11")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "29")
+        (pintype "PASSIVE")))
+    (net
+      (code 29)
+      (name "P30")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "10")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "30")
+        (pintype "PASSIVE")))
+    (net
+      (code 30)
+      (name "P31")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "9")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "31")
+        (pintype "PASSIVE")))
+    (net
+      (code 31)
+      (name "P32")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "8")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "32")
+        (pintype "PASSIVE")))
+    (net
+      (code 32)
+      (name "P34")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "6")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "34")
+        (pintype "PASSIVE")))
+    (net
+      (code 33)
+      (name "P38")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "2")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "38")
+        (pintype "PASSIVE")))
+    (net
+      (code 34)
+      (name "P39")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "1")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "39")
+        (pintype "PASSIVE")))
+    (net
+      (code 35)
+      (name "VCC_33")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "7")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "33")
+        (pintype "PASSIVE")))
+    (net
+      (code 36)
+      (name "VCC_35")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "5")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "35")
+        (pintype "PASSIVE")))
+    (net
+      (code 37)
+      (name "VCC_36")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "4")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "36")
+        (pintype "PASSIVE")))
+    (net
+      (code 38)
+      (name "VCC_37")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "3")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "37")
+        (pintype "PASSIVE")))
+    (net
+      (code 39)
+      (name "WR")
+      (class "Default")
+      (node
+        (ref "J1")
+        (pin "18")
+        (pintype "PASSIVE"))
+      (node
+        (ref "J2")
+        (pin "22")
+        (pintype "PASSIVE")))))

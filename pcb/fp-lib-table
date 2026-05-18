@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "FH26W") (type "KiCad") (uri "/home/drinkcat/dev/kicad/FH26W-39S-0.3SHW-Kicad") (options "") (descr ""))
+)

@@ -1,1 +1,10 @@
 *.log
+
+# KiCad / SKiDL generated artifacts
+*.erc
+*.dsn
+*.kicad_prl
+*-backups/
+_autosave-*
+~*.lck
+skidl_REPL.*
