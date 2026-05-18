@@ -297,6 +297,26 @@ above. 22 µF + 100 µF near the Xiao 3V3 pin.
 Total roughly 10× 100 nF + a handful of larger caps. Not really an
 open question, just a checklist item for schematic capture.
 
+### Q7b. Raspberry Pi RP2350 design-guide compliance
+
+Raspberry Pi publishes specific part recommendations for RP2350 boards
+to get the best regulator and clock performance. Following them gives
+us a sanity check from RPi if we ever submit the board for review.
+
+- **Adhere to the example layouts in the RP2350 hardware design guide**
+  — placement and via stitching around the EP, decoupling cap distance
+  to chip pins, ground return paths under the SMPS inductor.
+- **Polarised SMPS inductor:** Abracon **AOTA-B201610S3R3-101-T**
+  (3.3 µH, 2016 metric / 0805 imperial). This part is polarised, so
+  the PCB silkscreen must mark the dot terminal — stock KiCad inductor
+  footprints are non-polarised and need a manual silk marker (or a
+  custom footprint) before fab.
+- **Crystal:** Abracon **ABM8-272-T3** (12 MHz, 3225 4-pin package).
+  Matches the stock `Crystal_SMD_3225-4Pin_3.2x2.5mm` footprint
+  directly.
+- **PCB review by RPi:** Raspberry Pi has offered to review RP2350
+  board files before fab; consider submitting once layout is done.
+
 ### Q8. Mechanical / form factor
 
 - **Target board size: as small as possible**, ideally close to the

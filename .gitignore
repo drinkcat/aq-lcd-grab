@@ -8,3 +8,4 @@
 _autosave-*
 ~*.lck
 skidl_REPL.*
+reference/
