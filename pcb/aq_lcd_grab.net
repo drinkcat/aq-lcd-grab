@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/18/2026 03:23 PM")
+    (date "05/18/2026 05:08 PM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -57,7 +57,7 @@
         (field
           (name "SKiDL Tag") "C_ADC_AVDD_BULK")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -81,7 +81,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_P1V1_39")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -105,7 +105,7 @@
         (field
           (name "SKiDL Tag") "C_P1V1_HF_B")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -129,7 +129,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_IOVDD_1")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -153,7 +153,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_IOVDD_11")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -177,7 +177,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_IOVDD_20")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -201,7 +201,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_IOVDD_30")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -225,7 +225,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_IOVDD_38")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -249,7 +249,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_IOVDD_45")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -273,7 +273,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_VREG_AVDD")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -297,7 +297,7 @@
         (field
           (name "SKiDL Tag") "C_ADC_AVDD_HF")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -321,7 +321,7 @@
         (field
           (name "SKiDL Tag") "C_XIN_LOAD")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -345,7 +345,7 @@
         (field
           (name "SKiDL Tag") "C_ESP32_BULK_22U")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -369,7 +369,7 @@
         (field
           (name "SKiDL Tag") "C_ESP32_BULK_100U")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -393,7 +393,7 @@
         (field
           (name "SKiDL Tag") "C_XOUT_LOAD")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -417,7 +417,7 @@
         (field
           (name "SKiDL Tag") "C_VREG_VIN")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -441,7 +441,7 @@
         (field
           (name "SKiDL Tag") "C_P1V1_BULK_A")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -465,7 +465,7 @@
         (field
           (name "SKiDL Tag") "C_P1V1_BULK_B")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -489,7 +489,7 @@
         (field
           (name "SKiDL Tag") "C_P1V1_HF_A")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -513,7 +513,7 @@
         (field
           (name "SKiDL Tag") "C_DECOUPLE_P1V1_23")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+          (name "SKiDL Line") "aq_lcd_grab.py:86"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -561,7 +561,7 @@
         (field
           (name "SKiDL Tag") "J1_FLEX_MAIN")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:159"))
+          (name "SKiDL Line") "aq_lcd_grab.py:156"))
       (libsource
         (lib "Connector")
         (part "Conn_01x39_Socket"))
@@ -585,7 +585,7 @@
         (field
           (name "SKiDL Tag") "J2_FLEX_DISPLAY")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:163"))
+          (name "SKiDL Line") "aq_lcd_grab.py:160"))
       (libsource
         (lib "Connector")
         (part "Conn_01x39_Socket"))
@@ -705,7 +705,7 @@
         (field
           (name "SKiDL Tag") "R_XOUT_DAMP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -729,7 +729,7 @@
         (field
           (name "SKiDL Tag") "R_QSPI_SD1_PULLUP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -753,7 +753,7 @@
         (field
           (name "SKiDL Tag") "R_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -777,7 +777,7 @@
         (field
           (name "SKiDL Tag") "R_RUN_PULLUP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -801,7 +801,7 @@
         (field
           (name "SKiDL Tag") "R_VREG_AVDD_FILTER")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -825,7 +825,7 @@
         (field
           (name "SKiDL Tag") "R_USB_DP_SERIES")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -849,7 +849,7 @@
         (field
           (name "SKiDL Tag") "R_USB_DM_SERIES")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:94"))
+          (name "SKiDL Line") "aq_lcd_grab.py:91"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -873,7 +873,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO19")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:439"))
+          (name "SKiDL Line") "aq_lcd_grab.py:482"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -897,7 +897,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO20_UART1_TX")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:439"))
+          (name "SKiDL Line") "aq_lcd_grab.py:482"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -921,7 +921,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO21_UART1_RX")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:439"))
+          (name "SKiDL Line") "aq_lcd_grab.py:482"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -945,7 +945,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO22")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:439"))
+          (name "SKiDL Line") "aq_lcd_grab.py:482"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -969,7 +969,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO23")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:439"))
+          (name "SKiDL Line") "aq_lcd_grab.py:482"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -1017,7 +1017,7 @@
         (field
           (name "SKiDL Tag") "U2_ESP32C6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:474"))
+          (name "SKiDL Line") "aq_lcd_grab.py:517"))
       (libsource
         (lib "Connector_Generic")
         (part "Conn_01x14"))
@@ -1230,7 +1230,11 @@
       (node
         (ref "J2")
         (pin "24")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "28")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 5)
       (name "DB0")
@@ -1242,7 +1246,11 @@
       (node
         (ref "J2")
         (pin "2")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "2")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 6)
       (name "DB1")
@@ -1254,7 +1262,11 @@
       (node
         (ref "J2")
         (pin "3")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "3")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 7)
       (name "DB10")
@@ -1266,7 +1278,11 @@
       (node
         (ref "J2")
         (pin "12")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "14")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 8)
       (name "DB11")
@@ -1278,7 +1294,11 @@
       (node
         (ref "J2")
         (pin "13")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "15")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 9)
       (name "DB12")
@@ -1290,7 +1310,11 @@
       (node
         (ref "J2")
         (pin "14")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "16")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 10)
       (name "DB13")
@@ -1302,7 +1326,11 @@
       (node
         (ref "J2")
         (pin "15")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "17")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 11)
       (name "DB14")
@@ -1314,7 +1342,11 @@
       (node
         (ref "J2")
         (pin "16")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "18")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 12)
       (name "DB15")
@@ -1326,7 +1358,11 @@
       (node
         (ref "J2")
         (pin "17")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "19")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 13)
       (name "DB2")
@@ -1338,7 +1374,11 @@
       (node
         (ref "J2")
         (pin "4")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "4")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 14)
       (name "DB3")
@@ -1350,7 +1390,11 @@
       (node
         (ref "J2")
         (pin "5")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "5")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 15)
       (name "DB4")
@@ -1362,7 +1406,11 @@
       (node
         (ref "J2")
         (pin "6")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "7")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 16)
       (name "DB5")
@@ -1374,7 +1422,11 @@
       (node
         (ref "J2")
         (pin "7")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "8")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 17)
       (name "DB6")
@@ -1386,7 +1438,11 @@
       (node
         (ref "J2")
         (pin "8")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "9")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 18)
       (name "DB7")
@@ -1398,7 +1454,11 @@
       (node
         (ref "J2")
         (pin "9")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "10")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 19)
       (name "DB8")
@@ -1410,7 +1470,11 @@
       (node
         (ref "J2")
         (pin "10")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "12")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 20)
       (name "DB9")
@@ -1422,7 +1486,11 @@
       (node
         (ref "J2")
         (pin "11")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "13")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 21)
       (name "DC")
@@ -1434,7 +1502,11 @@
       (node
         (ref "J2")
         (pin "23")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "27")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 22)
       (name "GND")
@@ -2070,7 +2142,11 @@
       (node
         (ref "J2")
         (pin "22")
-        (pintype "PASSIVE")))
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "29")
+        (pintype "BIDIRECTIONAL")))
     (net
       (code 66)
       (name "XIN")

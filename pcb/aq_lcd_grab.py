@@ -12,11 +12,8 @@ Scope so far:
   - Status LED on GPIO 25 + bring-up test points on GPIO 19-23.
 
 Still to wire (later commits):
-  - Flex bus tap from J2[2..24] to RP2350 GPIO0..18 (the capture
-    fanout — kept out of this commit so the chip wiring can be
-    reviewed in isolation).
-  - Xiao ESP32-C6 castellated headers and ESP32-side signals
-    (UART to RP2350, RP2350 RUN control, PIC32 reset).
+  - ADC inputs on RP2350 GPIO 26–29 (pads 40–43), if any of the
+    target analog signals turn out to be worth sampling.
 
 Reference designators are intentionally LEFT for SKiDL to auto-assign
 across runs (C1, C2, ..., R1, R2, ...). If you want to manually paste
@@ -165,9 +162,12 @@ J2 = Part("Connector", "Conn_01x39_Socket",
           ref="J2",
           tag="J2_FLEX_DISPLAY")
 
+flex_nets = {}   # label -> Net, so the bus tap below can look signals up
 for i in range(1, 40):
-    n = Net(FLEX_PIN_LABELS[i])
+    label = FLEX_PIN_LABELS[i]
+    n = Net(label)
     n += J2[i], J1[40 - i]
+    flex_nets[label] = n
 
 
 # =============================================================================
@@ -420,6 +420,49 @@ R_LED[1] += P3V3
 R_LED[2] += D_LED[1]      # anode
 D_LED[2] += LED_STATUS    # cathode -> GPIO 25
 U1[37] += LED_STATUS
+
+
+# =============================================================================
+# Display capture tap (flex bus -> RP2350 GPIO 0–18)
+# =============================================================================
+# Taps onto the existing pass-through nets (DB0..DB15, DC, CS, WR) — the
+# signals stay routed straight across the board between J1 and J2; we
+# just branch each one to a RP2350 GPIO for capture.
+#
+# GPIO numbers match the Pico 2 W prototype firmware byte-for-byte so the
+# PIO program (`in pins, N` from base GPIO 0) runs unchanged on the new
+# board. See docs/pcb_spec.md "Display capture tap" / "RP2350 pin budget"
+# and firmware/src/pio_capture.rs.
+#
+# The 16 data lines land on RP2350 pads 2–19 (one contiguous QFN edge,
+# with pad 11 being IOVDD = the gap); DC/CS/WR land on pads 27–29 (next
+# edge over). This matches the spec's "GPIO 0–18 clustered along one
+# side of the package" assumption that drove the flex-connector
+# placement decision.
+CAPTURE_TAP = [
+    # (RP2350 GPIO #, RP2350 pad #, flex net label)
+    ( 0,  2, "DB0"),
+    ( 1,  3, "DB1"),
+    ( 2,  4, "DB2"),
+    ( 3,  5, "DB3"),
+    ( 4,  7, "DB4"),
+    ( 5,  8, "DB5"),
+    ( 6,  9, "DB6"),
+    ( 7, 10, "DB7"),
+    ( 8, 12, "DB8"),
+    ( 9, 13, "DB9"),
+    (10, 14, "DB10"),
+    (11, 15, "DB11"),
+    (12, 16, "DB12"),
+    (13, 17, "DB13"),
+    (14, 18, "DB14"),
+    (15, 19, "DB15"),
+    (16, 27, "DC"),    # 8080 cmd/data framing line (best guess)
+    (17, 28, "CS"),    # 8080 chip select (best guess; captured, not framed)
+    (18, 29, "WR"),    # write strobe — PIO sample trigger
+]
+for _gpio, pad, label in CAPTURE_TAP:
+    U1[pad] += flex_nets[label]
 
 
 # =============================================================================
