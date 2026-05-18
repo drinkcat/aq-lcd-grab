@@ -218,19 +218,63 @@ naturally with the display flex connector on that edge.
 These need answers before schematic. Tackle them in roughly this order;
 items earlier in the list block later ones.
 
-### Q3. RP2350 GPIO assignment for display capture
+### Q3. RP2350 GPIO assignment for display capture — RESOLVED
 
-The Pico 2 W prototype used specific GPIOs for the PIO capture program.
-Two choices:
+Kept the Pico 2 W prototype mapping (GPIO 0–15 → DB0–DB15, GPIO 16/17/18
+→ DC/CS/WR) so the PIO program runs unchanged. The contiguity is also
+naturally compatible with the QFN-60 pinout (pads 2–19 on one edge,
+27–29 on the next), which drives the placement of the display-side flex
+connector. See [aq_lcd_grab.py](../pcb/aq_lcd_grab.py) `CAPTURE_TAP`.
 
-- **Keep the same GPIO numbers** as the Pico 2 W prototype → PIO program
-  unchanged, less re-validation work, but routing on the PCB may be
-  awkward depending on where the flex connectors land.
-- **Reassign for routing convenience** → cleaner layout, but the PIO
-  program needs updating (pin base offsets) and re-testing.
+### Q9. Ground pour underneath the flex pass-through?
 
-Need to enumerate the prototype's GPIO assignment and overlay it on the
-proposed board layout before deciding.
+The bottom-side GND pour is interrupted directly under the flex
+pass-through traces between J1 and J2 if we route them on the top layer
+without via-stitching across. Question:
+
+- Does the 16-bit data bus + 8080 control signals need a continuous
+  GND reference plane underneath for signal integrity at the (modest)
+  display write-strobe speed?
+- Or is it fine to break the pour, since the parallel display protocol
+  is single-ended and slow?
+
+Probably fine to break the pour given the slow signals, but worth
+checking once we have a real placement to see how much pour we'd
+actually be cutting.
+
+### target. JLCPCB-friendly flex connector sourcing
+
+Currently using `FH26W:FH26W39S03SHW60` (Hirose FH26W, 39-pin 0.3 mm
+pitch). Need to check:
+
+- Is this part in JLCPCB's basic library? If not, what's the
+  extended-library availability and price?
+- Are there cheaper drop-in alternatives in JLCPCB basic that take
+  the same flex (39-pin, 0.3 mm pitch, dual contact)? Common
+  alternatives: Molex 502598-3990 / 502598 series, JST 39FMN-BMT,
+  generic AliExpress equivalents.
+- Footprint compatibility matters more than exact part number — if a
+  cheaper part has the same pad layout (same pitch, same lead-out
+  direction, same height), we can swap parts without redesigning.
+
+### Q11. Inductor polarity — RESOLVED (matches RPi reference)
+
+The polarised SMPS inductor (AOTA-B201610S3R3-101-T) has a dot
+marking on one terminal. Verified against the RPi reference PCB
+(`reference/RP2350A_Minimal/RP2350_60QFN_minimal.kicad_pcb` L1
+footprint):
+
+- `L_pol_2016` footprint pad 1 is the **dot terminal** (solid fab
+  circle at center -0.7, 0 on the pad 1 side; silk dot at
+  -0.9, -1.3 on the same side).
+- RPi reference PCB ties **pad 1 to +1V1** (regulated output side)
+  and **pad 2 to VREG_LX** (switching node).
+
+Our SKiDL matches: `L1[1] += P1V1`, `L1[2] += VREG_LX`. No change
+needed. (The conventional EMI guideline is "dot side on switch
+node," but RPi went the other way — likely because the AOTA part
+datasheet specifies polarity in that direction. Either way, we
+mirror the reference.)
 
 ### Q6. target 3V3 headroom
 
