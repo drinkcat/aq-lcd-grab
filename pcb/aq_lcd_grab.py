@@ -172,17 +172,16 @@ for i in range(1, 40):
 
 # =============================================================================
 # 3-pin power connector to target main board
-# (3V3 tap + GND; PIC32 reset will live on the third pin once the ESP32
-# side is wired up in a later commit)
+# (3V3 tap, GND, PIC32 reset)
 # =============================================================================
 J3 = Part("Connector", "Conn_01x03_Socket",
           footprint="Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
           ref="J3",
           tag="J3_AIRRUN_POWER")
+PIC32_RESET = Net("PIC32_RESET")   # open-drain from ESP32 (see ESP32 section)
 J3[1] += P3V3
 J3[2] += GND
-# J3[3] reserved for PIC32 reset (open-drain from ESP32) — left floating
-# until ESP32 wiring lands.
+J3[3] += PIC32_RESET
 
 
 # =============================================================================
@@ -446,6 +445,67 @@ for gpio_num, pad_num, ref, tag in GPIO_TEST_PIN_MAP:
 # Remaining unconnected RP2350 GPIOs (the capture bus pins 0–18 and ADC
 # pins 26–29) are left dangling here; they'll get connected in the next
 # commit (flex bus tap) and a possible ADC commit later.
+
+
+# =============================================================================
+# Xiao ESP32-C6 (DIP-mounted module)
+# =============================================================================
+# Footprint pads 1–14 wrap around the module in the silkscreen order. Pin
+# functions (verified against the symbol shipped with the SnapEDA part):
+#   1  GPIO0  (A0/D0)        -> RP2350 RUN drive (push-pull)
+#   2  GPIO1  (A1/D1)        -> PIC32 reset (open-drain; never drive high)
+#   3  GPIO2  (A2/D2)        free
+#   4  GPIO21 (D3)           free
+#   5  GPIO22 (D4/SDA)       free
+#   6  GPIO23 (D5/SCL)       free
+#   7  GPIO16 (D6/TX)        UART0 TX -> RP2350 UART RX (QSPI_SD3)
+#   8  GPIO17 (D7/RX)        UART0 RX <- RP2350 UART TX (QSPI_SD2)
+#   9  GPIO19 (D8/SCK)       free
+#   10 GPIO20 (D9/MISO)      free
+#   11 GPIO18 (D10/MOSI)     free
+#   12 3V3                   power input (backfeed; bypasses Xiao LDO)
+#   13 GND
+#   14 5V                    VBUS / target 5V tap
+#
+# The module's onboard regulator is bypassed by backfeeding 3V3 on pad 12,
+# so the USB-C connector on the Xiao itself is unusable for power while
+# the capture PCB is connected to the target. Unplug the 3-pin target
+# connector to power the Xiao from its own USB-C (see pcb_spec.md "Power").
+U2 = Part("Connector_Generic", "Conn_01x14",
+          footprint="esp32c6:XIAO-ESP32-C6-DIP",
+          ref="U2",
+          tag="U2_ESP32C6")
+
+# Power & ground
+U2[12] += P3V3
+U2[13] += GND
+U2[14] += P5V
+
+# Reset / control outputs
+U2[1] += RUN           # push-pull; RP2350 RUN has a 1 kΩ pull-up (R4)
+U2[2] += PIC32_RESET   # open-drain; target board provides the pull-up
+
+# UART0 to RP2350 bootrom (1 Mbaud) and runtime (any baud, F11 alt on RP2350)
+U2[7] += UART_RP_RX    # ESP32 TX -> RP2350 RX (QSPI_SD3)
+U2[8] += UART_RP_TX    # ESP32 RX <- RP2350 TX (QSPI_SD2)
+
+# Free GPIOs (pads 3, 4, 5, 6, 9, 10, 11) — left dangling for now. Wire
+# them in a later commit if we need extra ESP32 functions (e.g. status
+# signal back to RP2350, sensor I2C, OTA-arm button).
+
+# Bulk decoupling near pad 12 to absorb WiFi TX peaks locally so the
+# target 3V3 rail doesn't see them as transients (pcb_spec.md Q6/Q7).
+# Refdes C30/C31 sit outside the RPi C1–C18 range used for RP2350
+# decoupling so the cross-reference with the reference schematic stays
+# unambiguous.
+C_ESP_BULK_A = C("22u", "C30", "C_ESP32_BULK_22U",
+                 footprint="Capacitor_SMD:C_0805_2012Metric")
+C_ESP_BULK_A[1] += P3V3
+C_ESP_BULK_A[2] += GND
+C_ESP_BULK_B = C("100u", "C31", "C_ESP32_BULK_100U",
+                 footprint="Capacitor_SMD:C_1206_3216Metric")
+C_ESP_BULK_B[1] += P3V3
+C_ESP_BULK_B[2] += GND
 
 
 generate_netlist(file_="aq_lcd_grab.net")

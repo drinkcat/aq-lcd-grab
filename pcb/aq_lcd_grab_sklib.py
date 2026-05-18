@@ -139,4 +139,19 @@ aq_lcd_grab = SchLib(tool=SKIDL).add_parts(*[
             Pin(num='1',name='K',func=pin_types.PASSIVE,unit=1),
             Pin(num='2',name='A',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
         Part(**{ 'name':'TestPoint', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'TestPoint'}), 'ref_prefix':'TP', 'fplist':[''], 'footprint':'TestPoint:TestPoint_Pad_1.0x1.0mm', 'keywords':'test point tp', 'description':'test point', 'datasheet':'', 'pins':[
-            Pin(num='1',name='1',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] })])
+            Pin(num='1',name='1',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
+        Part(**{ 'name':'Conn_01x14', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'Conn_01x14'}), 'ref_prefix':'J', 'fplist':[''], 'footprint':'esp32c6:XIAO-ESP32-C6-DIP', 'keywords':'connector', 'description':'Generic connector, single row, 01x14, script generated (kicad-library-utils/schlib/autogen/connector/)', 'datasheet':'', 'pins':[
+            Pin(num='1',name='Pin_1',func=pin_types.PASSIVE,unit=1),
+            Pin(num='2',name='Pin_2',func=pin_types.PASSIVE,unit=1),
+            Pin(num='3',name='Pin_3',func=pin_types.PASSIVE,unit=1),
+            Pin(num='4',name='Pin_4',func=pin_types.PASSIVE,unit=1),
+            Pin(num='5',name='Pin_5',func=pin_types.PASSIVE,unit=1),
+            Pin(num='6',name='Pin_6',func=pin_types.PASSIVE,unit=1),
+            Pin(num='7',name='Pin_7',func=pin_types.PASSIVE,unit=1),
+            Pin(num='8',name='Pin_8',func=pin_types.PASSIVE,unit=1),
+            Pin(num='9',name='Pin_9',func=pin_types.PASSIVE,unit=1),
+            Pin(num='10',name='Pin_10',func=pin_types.PASSIVE,unit=1),
+            Pin(num='11',name='Pin_11',func=pin_types.PASSIVE,unit=1),
+            Pin(num='12',name='Pin_12',func=pin_types.PASSIVE,unit=1),
+            Pin(num='13',name='Pin_13',func=pin_types.PASSIVE,unit=1),
+            Pin(num='14',name='Pin_14',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] })])

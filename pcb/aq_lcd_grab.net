@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/18/2026 03:01 PM")
+    (date "05/18/2026 03:23 PM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -331,6 +331,54 @@
       (component_classes)
       (tstamps "021b8568-389a-59c1-9861-b5e383026fcf"))
     (comp
+      (ref "C30")
+      (value "22u")
+      (description "Unpolarized capacitor")
+      (footprint "Capacitor_SMD:C_0805_2012Metric")
+      (fields
+        (field
+          (name "Description") "Unpolarized capacitor")
+        (field
+          (name "Footprint") "Capacitor_SMD:C_0805_2012Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C_ESP32_BULK_22U")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+      (libsource
+        (lib "Device")
+        (part "C"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "2b2bfdd9-261f-5532-b13b-92832ebae7ee"))
+    (comp
+      (ref "C31")
+      (value "100u")
+      (description "Unpolarized capacitor")
+      (footprint "Capacitor_SMD:C_1206_3216Metric")
+      (fields
+        (field
+          (name "Description") "Unpolarized capacitor")
+        (field
+          (name "Footprint") "Capacitor_SMD:C_1206_3216Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "C_ESP32_BULK_100U")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:89"))
+      (libsource
+        (lib "Device")
+        (part "C"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "e45504f2-091c-5730-9303-5eb67735c659"))
+    (comp
       (ref "C4")
       (value "15p")
       (description "Unpolarized capacitor")
@@ -489,7 +537,7 @@
         (field
           (name "SKiDL Tag") "D1_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:415"))
+          (name "SKiDL Line") "aq_lcd_grab.py:414"))
       (libsource
         (lib "Device")
         (part "LED"))
@@ -561,7 +609,7 @@
         (field
           (name "SKiDL Tag") "J3_AIRRUN_POWER")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:178"))
+          (name "SKiDL Line") "aq_lcd_grab.py:177"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Socket"))
@@ -585,7 +633,7 @@
         (field
           (name "SKiDL Tag") "J4_USB_HEADER")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:191"))
+          (name "SKiDL Line") "aq_lcd_grab.py:190"))
       (libsource
         (lib "Connector")
         (part "Conn_01x04_Socket"))
@@ -609,7 +657,7 @@
         (field
           (name "SKiDL Tag") "J5_SWD_DEBUG")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:397"))
+          (name "SKiDL Line") "aq_lcd_grab.py:396"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Pin"))
@@ -633,7 +681,7 @@
         (field
           (name "SKiDL Tag") "L1_VREG")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:283"))
+          (name "SKiDL Line") "aq_lcd_grab.py:282"))
       (libsource
         (lib "Device")
         (part "L"))
@@ -825,7 +873,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO19")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:440"))
+          (name "SKiDL Line") "aq_lcd_grab.py:439"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -849,7 +897,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO20_UART1_TX")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:440"))
+          (name "SKiDL Line") "aq_lcd_grab.py:439"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -873,7 +921,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO21_UART1_RX")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:440"))
+          (name "SKiDL Line") "aq_lcd_grab.py:439"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -897,7 +945,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO22")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:440"))
+          (name "SKiDL Line") "aq_lcd_grab.py:439"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -921,7 +969,7 @@
         (field
           (name "SKiDL Tag") "TP_GPIO23")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:440"))
+          (name "SKiDL Line") "aq_lcd_grab.py:439"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -945,7 +993,7 @@
         (field
           (name "SKiDL Tag") "U1_RP2350")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:220"))
+          (name "SKiDL Line") "aq_lcd_grab.py:219"))
       (libsource
         (lib "MCU_RaspberryPi_RP2350")
         (part "RP2350_60QFN"))
@@ -954,6 +1002,30 @@
         (tstamps "/"))
       (component_classes)
       (tstamps "7c98d39c-fb5b-51fa-9f30-23012aa5fb69"))
+    (comp
+      (ref "U2")
+      (value "Conn_01x14")
+      (description "Generic connector, single row, 01x14, script generated (kicad-library-utils/schlib/autogen/connector/)")
+      (footprint "esp32c6:XIAO-ESP32-C6-DIP")
+      (fields
+        (field
+          (name "Description") "Generic connector, single row, 01x14, script generated (kicad-library-utils/schlib/autogen/connector/)")
+        (field
+          (name "Footprint") "esp32c6:XIAO-ESP32-C6-DIP")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "U2_ESP32C6")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:474"))
+      (libsource
+        (lib "Connector_Generic")
+        (part "Conn_01x14"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "a7a2a0d0-9bea-54a8-a77a-90b39ecc5bb2"))
     (comp
       (ref "Y1")
       (value "ABM8-272-T3")
@@ -969,7 +1041,7 @@
         (field
           (name "SKiDL Tag") "Y1_XTAL_12M")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:329"))
+          (name "SKiDL Line") "aq_lcd_grab.py:328"))
       (libsource
         (lib "Device")
         (part "Crystal_GND24"))
@@ -1056,6 +1128,14 @@
         (pin "1")
         (pintype "PASSIVE"))
       (node
+        (ref "C30")
+        (pin "1")
+        (pintype "PASSIVE"))
+      (node
+        (ref "C31")
+        (pin "1")
+        (pintype "PASSIVE"))
+      (node
         (ref "C5")
         (pin "1")
         (pintype "PASSIVE"))
@@ -1122,7 +1202,11 @@
       (node
         (ref "U1")
         (pin "54")
-        (pintype "POWER-IN")))
+        (pintype "POWER-IN"))
+      (node
+        (ref "U2")
+        (pin "12")
+        (pintype "PASSIVE")))
     (net
       (code 3)
       (name "+5V")
@@ -1130,6 +1214,10 @@
       (node
         (ref "J4")
         (pin "1")
+        (pintype "PASSIVE"))
+      (node
+        (ref "U2")
+        (pin "14")
         (pintype "PASSIVE")))
     (net
       (code 4)
@@ -1400,6 +1488,14 @@
         (pin "2")
         (pintype "PASSIVE"))
       (node
+        (ref "C30")
+        (pin "2")
+        (pintype "PASSIVE"))
+      (node
+        (ref "C31")
+        (pin "2")
+        (pintype "PASSIVE"))
+      (node
         (ref "C4")
         (pin "2")
         (pintype "PASSIVE"))
@@ -1447,6 +1543,10 @@
         (ref "U1")
         (pin "61")
         (pintype "POWER-IN"))
+      (node
+        (ref "U2")
+        (pin "13")
+        (pintype "PASSIVE"))
       (node
         (ref "Y1")
         (pin "2")
@@ -1761,6 +1861,18 @@
         (pintype "PASSIVE")))
     (net
       (code 49)
+      (name "PIC32_RESET")
+      (class "Default")
+      (node
+        (ref "J3")
+        (pin "3")
+        (pintype "PASSIVE"))
+      (node
+        (ref "U2")
+        (pin "2")
+        (pintype "PASSIVE")))
+    (net
+      (code 50)
       (name "RUN")
       (class "Default")
       (node
@@ -1770,9 +1882,13 @@
       (node
         (ref "U1")
         (pin "26")
-        (pintype "INPUT")))
+        (pintype "INPUT"))
+      (node
+        (ref "U2")
+        (pin "1")
+        (pintype "PASSIVE")))
     (net
-      (code 50)
+      (code 51)
       (name "SWCLK")
       (class "Default")
       (node
@@ -1784,7 +1900,7 @@
         (pin "24")
         (pintype "OUTPUT")))
     (net
-      (code 51)
+      (code 52)
       (name "SWDIO")
       (class "Default")
       (node
@@ -1796,23 +1912,31 @@
         (pin "25")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 52)
+      (code 53)
       (name "UART_RP_RX")
       (class "Default")
       (node
         (ref "U1")
         (pin "55")
-        (pintype "BIDIRECTIONAL")))
+        (pintype "BIDIRECTIONAL"))
+      (node
+        (ref "U2")
+        (pin "7")
+        (pintype "PASSIVE")))
     (net
-      (code 53)
+      (code 54)
       (name "UART_RP_TX")
       (class "Default")
       (node
         (ref "U1")
         (pin "58")
-        (pintype "BIDIRECTIONAL")))
+        (pintype "BIDIRECTIONAL"))
+      (node
+        (ref "U2")
+        (pin "8")
+        (pintype "PASSIVE")))
     (net
-      (code 54)
+      (code 55)
       (name "USB_DM")
       (class "Default")
       (node
@@ -1824,7 +1948,7 @@
         (pin "1")
         (pintype "PASSIVE")))
     (net
-      (code 55)
+      (code 56)
       (name "USB_DM_CHIP")
       (class "Default")
       (node
@@ -1836,7 +1960,7 @@
         (pin "51")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 56)
+      (code 57)
       (name "USB_DP")
       (class "Default")
       (node
@@ -1848,7 +1972,7 @@
         (pin "1")
         (pintype "PASSIVE")))
     (net
-      (code 57)
+      (code 58)
       (name "USB_DP_CHIP")
       (class "Default")
       (node
@@ -1860,7 +1984,7 @@
         (pin "52")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 58)
+      (code 59)
       (name "VCC_33")
       (class "Default")
       (node
@@ -1872,7 +1996,7 @@
         (pin "33")
         (pintype "PASSIVE")))
     (net
-      (code 59)
+      (code 60)
       (name "VCC_35")
       (class "Default")
       (node
@@ -1884,7 +2008,7 @@
         (pin "35")
         (pintype "PASSIVE")))
     (net
-      (code 60)
+      (code 61)
       (name "VCC_36")
       (class "Default")
       (node
@@ -1896,7 +2020,7 @@
         (pin "36")
         (pintype "PASSIVE")))
     (net
-      (code 61)
+      (code 62)
       (name "VCC_37")
       (class "Default")
       (node
@@ -1908,7 +2032,7 @@
         (pin "37")
         (pintype "PASSIVE")))
     (net
-      (code 62)
+      (code 63)
       (name "VREG_AVDD")
       (class "Default")
       (node
@@ -1924,7 +2048,7 @@
         (pin "23")
         (pintype "POWER-IN")))
     (net
-      (code 63)
+      (code 64)
       (name "VREG_LX")
       (class "Default")
       (node
@@ -1936,7 +2060,7 @@
         (pin "48")
         (pintype "POWER-OUT")))
     (net
-      (code 64)
+      (code 65)
       (name "WR")
       (class "Default")
       (node
@@ -1948,7 +2072,7 @@
         (pin "22")
         (pintype "PASSIVE")))
     (net
-      (code 65)
+      (code 66)
       (name "XIN")
       (class "Default")
       (node
@@ -1964,7 +2088,7 @@
         (pin "1")
         (pintype "PASSIVE")))
     (net
-      (code 66)
+      (code 67)
       (name "XOUT")
       (class "Default")
       (node
@@ -1980,7 +2104,7 @@
         (pin "3")
         (pintype "PASSIVE")))
     (net
-      (code 67)
+      (code 68)
       (name "XOUT_DRIVE")
       (class "Default")
       (node
