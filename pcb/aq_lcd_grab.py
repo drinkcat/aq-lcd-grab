@@ -495,20 +495,26 @@ for gpio_num, pad_num, ref, tag in GPIO_TEST_PIN_MAP:
 # =============================================================================
 # Footprint pads 1–14 wrap around the module in the silkscreen order. Pin
 # functions (verified against the symbol shipped with the SnapEDA part):
-#   1  GPIO0  (A0/D0)        -> RP2350 RUN drive (push-pull)
-#   2  GPIO1  (A1/D1)        -> PIC32 reset (open-drain; never drive high)
-#   3  GPIO2  (A2/D2)        free
-#   4  GPIO21 (D3)           free
-#   5  GPIO22 (D4/SDA)       free
-#   6  GPIO23 (D5/SCL)       free
+#   1  GPIO0  (A0/D0)        unused (single-edge routing choice — see below)
+#   2  GPIO1  (A1/D1)        unused
+#   3  GPIO2  (A2/D2)        unused
+#   4  GPIO21 (D3)           unused
+#   5  GPIO22 (D4/SDA)       unused
+#   6  GPIO23 (D5/SCL)       unused
 #   7  GPIO16 (D6/TX)        UART0 TX -> RP2350 UART RX (QSPI_SD3)
 #   8  GPIO17 (D7/RX)        UART0 RX <- RP2350 UART TX (QSPI_SD2)
-#   9  GPIO19 (D8/SCK)       free
-#   10 GPIO20 (D9/MISO)      free
-#   11 GPIO18 (D10/MOSI)     free
+#   9  GPIO19 (D8/SCK)       RP2350 RUN drive (push-pull)
+#   10 GPIO20 (D9/MISO)      PIC32 reset (open-drain; never drive high)
+#   11 GPIO18 (D10/MOSI)     free (spare GPIO for future use)
 #   12 3V3                   power input (backfeed; bypasses Xiao LDO)
 #   13 GND
 #   14 5V                    VBUS / target 5V tap
+#
+# Single-edge routing: all connected pins land on pads 7–14, the
+# Xiao's "back" edge as drawn. Pads 1–6 (the other edge) are
+# intentionally left unconnected so the module's footprint only
+# needs traces escaping from one side — much easier to fan out
+# under the Xiao toward the RP2350 and J3.
 #
 # The module's onboard regulator is bypassed by backfeeding 3V3 on pad 12,
 # so the USB-C connector on the Xiao itself is unusable for power while
@@ -524,17 +530,17 @@ U2[12] += P3V3
 U2[13] += GND
 U2[14] += P5V
 
-# Reset / control outputs
-U2[1] += RUN           # push-pull; RP2350 RUN has a 1 kΩ pull-up (R4)
-U2[2] += PIC32_RESET   # open-drain; target board provides the pull-up
-
 # UART0 to RP2350 bootrom (1 Mbaud) and runtime (any baud, F11 alt on RP2350)
 U2[7] += UART_RP_RX    # ESP32 TX -> RP2350 RX (QSPI_SD3)
 U2[8] += UART_RP_TX    # ESP32 RX <- RP2350 TX (QSPI_SD2)
 
-# Free GPIOs (pads 3, 4, 5, 6, 9, 10, 11) — left dangling for now. Wire
-# them in a later commit if we need extra ESP32 functions (e.g. status
-# signal back to RP2350, sensor I2C, OTA-arm button).
+# Reset / control outputs
+U2[9]  += RUN           # GPIO19 — push-pull; RP2350 RUN has a 1 kΩ pull-up (R4)
+U2[10] += PIC32_RESET   # GPIO20 — open-drain; target board provides the pull-up
+
+# Pad 11 (GPIO18) left free for a future ESP32 ↔ RP2350 side-channel
+# signal (e.g. "image loaded, RP2350 ready") if we want one. Pads 1–6
+# unconnected by design — single-edge routing (see comment above).
 
 # Bulk decoupling near pad 12 to absorb WiFi TX peaks locally so the
 # target 3V3 rail doesn't see them as transients (pcb_spec.md Q6/Q7).
