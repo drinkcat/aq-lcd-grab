@@ -223,87 +223,106 @@ U1 = Part("MCU_RaspberryPi_RP2350", "RP2350_60QFN",
           tag="U1_RP2350")
 
 # Power decoupling — refdes match RPi minimal-board reference 1:1 for
-# the parts we share:
-#   C1, C2     -> ADC_AVDD bulk + HF
-#   C8, C11    -> extra +1V1 (DVDD) decoupling (RPi puts these on +1V1,
-#                 not +3V3, despite the higher refdes — see reference)
-#   C12-C17    -> 6× 100 nF for the 6× IOVDD pins (one each)
-#   C18        -> VREG_AVDD decoupling
-# QSPI_IOVDD (pin 54) and USB_OTP_VDD (pin 53) are not separately
-# decoupled — we follow RPi's reference and rely on a nearby IOVDD cap
-# (C12-C17) being placed close enough on the PCB to bypass them too.
-# Just tie the pins to +3V3.
-U1[54] += P3V3   # QSPI_IOVDD
-U1[53] += P3V3   # USB_OTP_VDD
+# every cap we share. The reference uses *rail-only* decoupling: no
+# capacitor has a terminal on a specific U1 pad; they all just shunt
+# their rail to GND. The chip pins for each rail simply tie to the
+# rail net and rely on nearby caps for bypass. The only exception is
+# VREG_AVDD, which sits on its own filtered net (R5 + C9) before
+# reaching pin 46.
+#
+# Reference cap inventory (https://datasheets.raspberrypi.com/rp2350/
+# RP2350-Minimal-Design.pdf, accompanying KiCad project lives at
+# reference/RP2350A_Minimal/):
+#   C3, C4               -> 15 pF crystal load (handled in crystal block)
+#   C6                   -> 4.7 µF on +3V3 (pre-L1 / VREG_VIN side bulk)
+#   C7, C10              -> 4.7 µF on +1V1 (post-L1 bulk)
+#   C8, C11              -> 100 nF on +1V1 (HF bypass)
+#   C9                   -> 4.7 µF on VREG_AVDD (per-pin filter, paired with R5)
+#   C12-C17              -> 100 nF on +3V3 (×6, one near each IOVDD pin
+#                           on the layout, but electrically just rail caps)
+#   C18                  -> 100 nF on +3V3 (general bypass)
+#   C19                  -> 10 µF on +3V3 (rail bulk near U1)
+# Reference C1/C2/C5 belong to RPi's onboard 3V3 regulator and QSPI
+# flash, which our board doesn't have (we tap target's 3V3 rail and
+# UART-boot the RP2350) — so those three refdes are omitted here.
 
-# 6× IOVDD on +3V3, one 100 nF per pin (RPi C12–C17).
-IOVDD_PINS = [(1,  "C12", "IOVDD_1"),
-              (11, "C13", "IOVDD_11"),
-              (20, "C14", "IOVDD_20"),
-              (30, "C15", "IOVDD_30"),
-              (38, "C16", "IOVDD_38"),
-              (45, "C17", "IOVDD_45")]
-for pad_num, ref, label in IOVDD_PINS:
-    decouple(P3V3, U1[pad_num], ref, label)
+# 3V3 pins on U1: IOVDD (1, 11, 20, 30, 38, 45), ADC_AVDD (44),
+# USB_OTP_VDD (53), QSPI_IOVDD (54), VREG_VIN (49). All on one net.
+for pad_num in (1, 11, 20, 30, 38, 44, 45, 49, 53, 54):
+    U1[pad_num] += P3V3
 
-# VREG_AVDD (pin 46): analog supply for the internal regulator. RPi
-# inserts a 33 Ω filter resistor (R5) between 3V3 and the VREG_AVDD pin,
-# with a 100 nF cap (C18) to ground at the pin side.
+# DVDD pins (6, 23, 39): the chip's 1.1 V core supply. All three on
+# +1V1, no per-pin caps (matches reference — see C7/C10 inventory above).
+for pad_num in (6, 23, 39):
+    U1[pad_num] += P1V1
+
+# VREG_AVDD (pin 46): analog supply for the on-die regulator. RPi
+# inserts a 33 Ω filter resistor (R5) between +3V3 and pin 46, with
+# a 4.7 µF cap (C9) to ground on the pin side. No HF cap here in
+# the reference.
 VREG_AVDD = Net("VREG_AVDD")
 R_VREG_AVDD = R("33", "R5", "R_VREG_AVDD_FILTER")
 R_VREG_AVDD[1] += P3V3
 R_VREG_AVDD[2] += VREG_AVDD
-decouple(P3V3, U1[46], "C18", "VREG_AVDD")
-
-# ADC_AVDD (pin 44): RPi reference uses 10 µF + 100 nF straight off 3V3
-# (no ferrite bead). Matches their C1 (10 µF 0805) + C2 (100 nF).
-C_ADC_BULK = C("10u", "C1", "C_ADC_AVDD_BULK",
-               footprint="Capacitor_SMD:C_0805_2012Metric")
-C_ADC_BULK[1] += P3V3
-C_ADC_BULK[2] += GND
-C_ADC_HF = C("100n", "C2", "C_ADC_AVDD_HF")
-C_ADC_HF[1] += P3V3
-C_ADC_HF[2] += GND
-U1[44] += P3V3   # ADC_AVDD direct to 3V3 (no ferrite — matches reference)
+U1[46] += VREG_AVDD
+C9 = C("4.7u", "C9", "C_VREG_AVDD_FILTER")
+C9[1] += VREG_AVDD
+C9[2] += GND
 
 # Internal SMPS for the 1.1V core (P1V1), exact-match to RPi reference:
-#   VREG_VIN (49) <- 3V3, with 10 µF input cap (C5, 0805)
-#   VREG_LX  (48) -> L1 (3.3 µH polarised AOTA-B201610S3R3-101-T) -> P1V1
+#   VREG_VIN  (49) <- +3V3 (already tied above)
+#   VREG_LX   (48) -> L1 (3.3 µH polarised AOTA-B201610S3R3-101-T) -> P1V1
 #   VREG_PGND (47) -> GND
-#   VREG_FB  (50) -> P1V1 (senses the filtered output)
-#   P1V1 pins 23, 39 <- P1V1, with 2× 4.7 µF bulk caps near the inductor
-#     plus 4.7 µF per P1V1 pin (C6, C7, C9, C10 in the reference).
-C_VREG_VIN = C("10u", "C5", "C_VREG_VIN",
-               footprint="Capacitor_SMD:C_0805_2012Metric")
-C_VREG_VIN[1] += P3V3
-C_VREG_VIN[2] += GND
-U1[49] += P3V3
-
+#   VREG_FB   (50) -> P1V1 (senses the filtered output)
 L1 = Part("Device", "L",
           value="3.3u",
           footprint="RP2350_60QFN_minimal:L_pol_2016",
           ref="L1",
           tag="L1_VREG")
-L1[1] += VREG_LX
-L1[2] += P1V1
+L1[1] += P1V1
+L1[2] += VREG_LX
 U1[48] += VREG_LX
 U1[47] += GND
 U1[50] += P1V1    # VREG_FB senses P1V1 (the filtered output)
 
-# RPi-style P1V1 bulk: 2× 4.7 µF near the chip on their custom "small_pads"
-# 0402 footprint (C6, C7) plus one 4.7 µF per P1V1 pin (C9, C10).
+# +3V3 rail decoupling caps. RPi uses "small_pads" 0402 footprint for
+# C6 (close-coupled to VREG_VIN pad on the chip). C12–C17 are placed
+# one per IOVDD pin on the layout. C18 is a generic bypass; C19 is
+# the bulk cap.
 SMALL_PADS_FP = "RP2350_60QFN_minimal:C_0402_1005Metric_small_pads"
-C_P1V1_BULK_A = C("4.7u", "C6", "C_P1V1_BULK_A", footprint=SMALL_PADS_FP)
-C_P1V1_BULK_A[1] += P1V1
-C_P1V1_BULK_A[2] += GND
-C_P1V1_BULK_B = C("4.7u", "C7", "C_P1V1_BULK_B", footprint=SMALL_PADS_FP)
-C_P1V1_BULK_B[1] += P1V1
-C_P1V1_BULK_B[2] += GND
-decouple(VREG_AVDD, U1[23], "C9",  "P1V1_23", value="4.7u")
-decouple(P1V1, U1[39], "C10", "P1V1_39", value="4.7u")
-# Additional +1V1 HF decoupling caps to match RPi reference (C8, C11 — both
-# 100 nF between +1V1 and GND, not tied to a specific U1 pin; they shunt
-# the rail in general).
+C6 = C("4.7u", "C6", "C_3V3_VREG_VIN_BULK", footprint=SMALL_PADS_FP)
+C6[1] += P3V3
+C6[2] += GND
+
+IOVDD_CAPS = [("C12", "3V3_IOVDD_1"),
+              ("C13", "3V3_IOVDD_11"),
+              ("C14", "3V3_IOVDD_20"),
+              ("C15", "3V3_IOVDD_30"),
+              ("C16", "3V3_IOVDD_38"),
+              ("C17", "3V3_IOVDD_45")]
+for ref, label in IOVDD_CAPS:
+    cap = C("100n", ref, f"C_{label}")
+    cap[1] += P3V3
+    cap[2] += GND
+
+C18 = C("100n", "C18", "C_3V3_BYPASS")
+C18[1] += P3V3
+C18[2] += GND
+
+C19 = C("10u", "C19", "C_3V3_BULK",
+        footprint="Capacitor_SMD:C_0805_2012Metric")
+C19[1] += P3V3
+C19[2] += GND
+
+# +1V1 rail decoupling. C7 is the small_pads close-coupled bulk
+# right at L1's output (RPi places it next to the inductor); C10 is
+# a second 4.7 µF bulk; C8 + C11 are the HF bypasses.
+C7 = C("4.7u", "C7", "C_P1V1_L1_BULK", footprint=SMALL_PADS_FP)
+C7[1] += P1V1
+C7[2] += GND
+C10 = C("4.7u", "C10", "C_P1V1_BULK")
+C10[1] += P1V1
+C10[2] += GND
 C8 = C("100n", "C8", "C_P1V1_HF_A")
 C8[1] += P1V1
 C8[2] += GND
@@ -441,21 +460,21 @@ U1[37] += LED_STATUS
 # placement decision.
 CAPTURE_TAP = [
     # (RP2350 GPIO #, RP2350 pad #, flex net label)
-    ( 0,  2, "DB0"),
-    ( 1,  3, "DB1"),
-    ( 2,  4, "DB2"),
-    ( 3,  5, "DB3"),
-    ( 4,  7, "DB4"),
-    ( 5,  8, "DB5"),
-    ( 6,  9, "DB6"),
-    ( 7, 10, "DB7"),
-    ( 8, 12, "DB8"),
-    ( 9, 13, "DB9"),
-    (10, 14, "DB10"),
-    (11, 15, "DB11"),
-    (12, 16, "DB12"),
-    (13, 17, "DB13"),
-    (14, 18, "DB14"),
+    ( 0,  2, "DB14"),
+    ( 1,  3, "DB12"),
+    ( 2,  4, "DB10"),
+    ( 3,  5, "DB8"),
+    ( 4,  7, "DB6"),
+    ( 5,  8, "DB4"),
+    ( 6,  9, "DB2"),
+    ( 7, 10, "DB0"),
+    ( 8, 12, "DB1"),
+    ( 9, 13, "DB3"),
+    (10, 14, "DB5"),
+    (11, 15, "DB7"),
+    (12, 16, "DB9"),
+    (13, 17, "DB11"),
+    (14, 18, "DB13"),
     (15, 19, "DB15"),
     (16, 27, "DC"),    # 8080 cmd/data framing line (best guess)
     (17, 28, "CS"),    # 8080 chip select (best guess; captured, not framed)
