@@ -270,6 +270,35 @@ def make_segment(x1, y1, x2, y2, width, layer, net):
     )
 
 
+def make_via(x, y, net, size=0.5, drill=0.25,
+             layer_top="F.Cu", layer_bot="B.Cu"):
+    return (
+        f"\t(via\n"
+        f"\t\t(at {fmt(x)} {fmt(y)})\n"
+        f"\t\t(size {fmt(size)})\n"
+        f"\t\t(drill {fmt(drill)})\n"
+        f'\t\t(layers "{layer_top}" "{layer_bot}")\n'
+        f'\t\t(net "{net}")\n'
+        f'\t\t(uuid "{uuid.uuid4()}")\n'
+        f"\t)\n"
+    )
+
+
+# Escape vias for the odd-DB nets (In2.Cu layer). Drop a via on the inner
+# trace in the middle stretch so a horizontal escape route can pick the
+# signal up on F.Cu or B.Cu. Order is "DB1 furthest down (largest y), then
+# DB3, DB5, ... stepping upward" — adjacent vias staggered in y so
+# horizontal traces can fan between them without crowding.
+ESCAPE_Y_START = 54.0    # mm, DB1's via y
+ESCAPE_Y_STEP = 0.3      # mm, decrement per net within a row
+ESCAPE_Y_ROW_GAP = 2.4   # mm, vertical gap between the two staggered rows
+                         # — sized so row 2's topmost via (DB3) sits clearly
+                         # below row 1's bottommost via (DB15), leaving a
+                         # horizontal lane for In1.Cu escape routes
+ODD_DB_ESCAPE_ORDER = ("DB1", "DB3", "DB5", "DB7",
+                       "DB9", "DB11", "DB13", "DB15")
+
+
 def main():
     src = PCB.read_text()
 
@@ -350,6 +379,54 @@ def main():
         n_detours = (len(polyline) - 2) // 2
         if n_detours:
             print(f"  {net}: {n_detours} via detour(s)")
+
+    # --- Escape vias on the odd-DB nets ------------------------------------
+    # Drop a small via on the middle stretch of each odd-DB inner trace, with
+    # a two-row y-stagger so horizontal In1.Cu escape routes can fan through
+    # the gap between rows.
+    #
+    # Each odd-DB net has exactly 2 flex vias (top + bottom of the
+    # pass-through). Any OTHER via on these nets is an existing escape via
+    # from a previous run; delete it so we can re-place at the new location.
+    for idx, net in enumerate(ODD_DB_ESCAPE_ORDER):
+        existing = vias_by_net.get(net, [])
+        flex_pair = [v for v in existing
+                     if abs(float(v["fields"]["at"][1]) - 33.24) < 0.05
+                     or abs(float(v["fields"]["at"][1]) - 36.04) < 0.05
+                     or abs(float(v["fields"]["at"][1]) - 65.89) < 0.05
+                     or abs(float(v["fields"]["at"][1]) - 68.69) < 0.05]
+        old_escapes = [v for v in existing if v not in flex_pair]
+        if len(flex_pair) != 2:
+            print(f"  ESCAPE {net}: expected 2 flex vias, got "
+                  f"{len(flex_pair)} — skipping", file=sys.stderr)
+            continue
+        # Delete any stale escape vias for this net.
+        for v in old_escapes:
+            start = v["start"]
+            while start > 0 and src[start - 1] == "\t":
+                start -= 1
+            end = v["end"]
+            if end < len(src) and src[end] == "\n":
+                end += 1
+            deletes.append((start, end))
+
+        # Column x = avg of the two flex vias.
+        xs = [float(v["fields"]["at"][0]) for v in flex_pair]
+        col_x = sum(xs) / len(xs)
+        # Two-row stagger: odd-indexed nets shift upward (smaller y) by
+        # ESCAPE_Y_ROW_GAP to leave horizontal lanes on In1.Cu.
+        target_y = ESCAPE_Y_START - idx * ESCAPE_Y_STEP
+        if idx % 2 == 1:
+            target_y -= ESCAPE_Y_ROW_GAP
+        # Anchor near the net's existing flex vias so the file stays grouped.
+        anchor = flex_pair[0]["start"]
+        # Walk back to the line start so the new via lands at top-level
+        # indent, not inside the previous via's content.
+        while anchor > 0 and src[anchor - 1] == "\t":
+            anchor -= 1
+        inserts.append((anchor, make_via(col_x, target_y, net)))
+        print(f"  ESCAPE {net}: via at ({col_x:.4f}, {target_y:.4f})"
+              + (f" (removed {len(old_escapes)} stale)" if old_escapes else ""))
 
     # Each insert anchor points into a soon-to-be-deleted range; translate
     # to the start of the enclosing delete so the new segments fill the gap.
