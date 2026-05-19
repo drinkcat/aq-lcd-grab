@@ -243,8 +243,72 @@ def route_with_plan(ax, ay, bx, by, track_width, obstacles):
     return deduped
 
 
-def route_around_vias(ax, ay, bx, by, track_width, obstacles):
-    """Entry point used by the main rewriter."""
+def route_through_obstacles(ax, ay, bx, by, track_width, obstacles):
+    """Route a near-vertical In1.Cu trace from A to B, dodging individual
+    obstacle vias mid-run (each at its own y). Used for even-DB nets that
+    need to thread past the staggered odd-DB escape vias.
+
+    Algorithm mirrors `build_fanout` but anchored to a column running the
+    full length A→B (not just a one-sided fanout from an endpoint).
+    """
+    if ay < by:
+        top_x, top_y, bot_x, bot_y = ax, ay, bx, by
+    else:
+        top_x, top_y, bot_x, bot_y = bx, by, ax, ay
+    col_x = (top_x + bot_x) / 2
+    half_w = track_width / 2.0
+
+    # Filter to obstacles whose y is between top_y and bot_y AND close enough
+    # to the column to potentially violate clearance. Sort by y (descending,
+    # since we walk top→bottom = increasing y).
+    candidates = []
+    for ox, oy, orad in obstacles:
+        if oy <= top_y + 0.5 or oy >= bot_y - 0.5:
+            continue
+        needed = orad + CLEARANCE + half_w + DETOUR_PAD
+        dx_obs = ox - col_x
+        if abs(dx_obs) >= needed:
+            continue
+        candidates.append((oy, dx_obs, orad, needed))
+    candidates.sort()    # by y ascending
+
+    pts = [(top_x, top_y)]
+    cur_offset = 0.0
+    for oy, dx_obs, orad, needed in candidates:
+        # Target offset on the side opposite the obstacle.
+        offset_mag = needed - abs(dx_obs)
+        target_offset = -math.copysign(offset_mag, dx_obs)
+        if abs(target_offset - cur_offset) < 1e-9:
+            continue
+        delta = target_offset - cur_offset
+        # Arrive at target_offset by y = oy − (offset_mag + JOG_LEAD_IN).
+        jog_arrival_y = oy - (offset_mag + JOG_LEAD_IN)
+        jog_start_y = jog_arrival_y - abs(delta)
+        pts.append((col_x + cur_offset, jog_start_y))
+        pts.append((col_x + target_offset, jog_arrival_y))
+        # Hold offset through the obstacle.
+        hold_end_y = oy + (offset_mag + JOG_LEAD_IN)
+        pts.append((col_x + target_offset, hold_end_y))
+        cur_offset = target_offset
+    # Return to column for the final approach to bottom via.
+    if abs(cur_offset) > 1e-9:
+        return_y = pts[-1][1] + abs(cur_offset)
+        pts.append((col_x, return_y))
+    pts.append((bot_x, bot_y))
+
+    deduped = [pts[0]]
+    for p in pts[1:]:
+        if math.hypot(p[0] - deduped[-1][0], p[1] - deduped[-1][1]) > 1e-6:
+            deduped.append(p)
+    return deduped
+
+
+def route_around_vias(ax, ay, bx, by, track_width, obstacles, layer=None):
+    """Entry point used by the main rewriter. Dispatches based on layer:
+    In2.Cu nets get the endpoint-fanout treatment; In1.Cu nets get mid-run
+    obstacle dodging for the staggered escape vias on adjacent columns."""
+    if layer == "In1.Cu":
+        return route_through_obstacles(ax, ay, bx, by, track_width, obstacles)
     return route_with_plan(ax, ay, bx, by, track_width, obstacles)
 
 
@@ -324,10 +388,20 @@ def main():
     deletes = []   # (start, end) byte ranges, half-open, including trailing \n
     inserts = []   # (anchor_offset, replacement_text)
 
+    # All known flex-band y-values (both J2/top and J1/bottom rows).
+    FLEX_BAND_YS = (33.24, 36.04, 38.94, 40.94, 60.99, 62.99, 65.89, 68.69)
+
+    def is_flex_pair_via(via):
+        vy = float(via["fields"]["at"][1])
+        return any(abs(vy - b) < 0.05 for b in FLEX_BAND_YS)
+
     for net in FLEX_NETS:
-        vias = vias_by_net[net]
+        # Filter to the actual flex pass-through vias (top + bottom); ignore
+        # any escape vias or other extras that may have been added.
+        all_net_vias = vias_by_net[net]
+        vias = [v for v in all_net_vias if is_flex_pair_via(v)]
         if len(vias) != 2:
-            print(f"SKIP {net}: {len(vias)} vias (expected 2)",
+            print(f"SKIP {net}: {len(vias)} flex-band vias (expected 2)",
                   file=sys.stderr)
             continue
         inner = [s for s in segments_by_net[net]
@@ -357,7 +431,8 @@ def main():
         # PTHs, so they obstruct every inner layer; we don't filter by layer.
         obstacles = [(x, y, r) for x, y, r, n in all_vias if n != net]
 
-        polyline = route_around_vias(ax, ay, bx, by, width, obstacles)
+        polyline = route_around_vias(ax, ay, bx, by, width, obstacles,
+                                     layer=inner_layer)
 
         # Mark inner segments for deletion.
         for s in inner:
