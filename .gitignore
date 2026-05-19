@@ -9,3 +9,4 @@ _autosave-*
 ~*.lck
 skidl_REPL.*
 reference/
+pcb/production/
