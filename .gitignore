@@ -10,3 +10,4 @@ _autosave-*
 skidl_REPL.*
 reference/
 pcb/production/
+__pycache__/
