@@ -44,7 +44,10 @@ FLEX_NETS = [
 ]
 
 CLEARANCE = 0.2     # mm, from project netclass "Default"
-DETOUR_PAD = 0.05   # mm, extra slack so we sit clearly outside the DRC limit
+DETOUR_PAD = 0.005  # mm, extra slack on the perpendicular offset magnitude
+JOG_LEAD_IN = 0.05  # mm, extra longitudinal slack so the diagonal corner
+                    # sits clearly outside the obstacle's clearance circle —
+                    # "turn earlier" margin
 
 TOK = re.compile(r'\(|\)|"(?:[^"\\]|\\.)*"|[^\s()"]+', re.DOTALL)
 
@@ -89,86 +92,149 @@ def dist_point_segment(px, py, ax, ay, bx, by):
     return math.hypot(px - cx, py - cy), t
 
 
-# Flex vias sit on a staggered 4-band grid per connector side. The two "deep"
-# bands (top y=33.24 and y=36.04) need to traverse the in-between rows of
-# foreign vias; they get a 45°-jog plan. The two "shallow" bands (38.94, 40.94)
-# sit closest to the middle and route straight through — they're on a
-# different inner layer (In1.Cu) than the deep bands (In2.Cu), so they don't
-# need to weave around the deep bands' vias.
+# Flex vias sit on a staggered 4-band grid per connector side.
+#   J2 (top) bands:    33.24, 36.04, 38.94, 40.94
+#   J1 (bottom) bands: 68.69, 65.89, 62.99, 60.99
+# Pairing (top↔bottom) for each net depends on which J1 pin number it's
+# wired to:
+#   33.24 ↔ 65.89    36.04 ↔ 68.69    38.94 ↔ 62.99    40.94 ↔ 60.99
 #
-# Within the deep bands, the two y-values use OPPOSITE jog patterns so
-# adjacent same-layer nets nudge into the gaps between each other's columns:
-#   y=33.24 → jog LEFT first, then RIGHT (then back to column)
-#   y=36.04 → jog RIGHT first, then LEFT (then back to column)
+# The "deep" bands (33.24 / 36.04 on top, 68.69 / 65.89 on bottom) are on
+# In2.Cu; their traces must thread past the "shallow" bands' via columns
+# (38.94, 40.94 on top; 62.99, 60.99 on bottom). The shallow-band nets
+# themselves are on In1.Cu and route straight through.
 #
-# The hand-routed reference (commit aa244b63fcac) uses offsets of 0.225 mm
-# (deep side) and 0.185 mm (shallow side). Each jog is a true 45° diagonal
-# (|Δx| == |Δy|). The plan describes the TOP fanout; the bottom fanout
-# mirrors it.
+# A deep-band trace passes two obstacle rows per side. At each row, the
+# nearest same-layer obstacle column sits Δx ≈ ±0.30 mm from the trace's
+# column. The trace dodges to the opposite side, with offset just enough
+# to clear:
 #
-# Plan entries are (Δx_offset, Δy_below_top_via): cumulative waypoints on
-# the trace, with 45° diagonals interpolated between consecutive entries.
+#     offset = (orad + CLEARANCE + half_track + DETOUR_PAD) − |Δx_obstacle|
+#
+# Jogs are 45° diagonals (|Δx| == |Δy|). The longitudinal jog lands the
+# trace at the target offset by the time y reaches `obstacle_y − offset`,
+# so the diagonal's corner sits at `obstacle_y − 2*offset` (entering) and
+# `obstacle_y + 2*offset` (exiting).
 
-JOG_PLANS = {
-    "33.24": [
-        (0.0,     4.81),    # stay on column ~4.8 mm
-        (-0.225,  5.035),   # 45° jog LEFT (Δx=0.225, Δy=0.225)
-        (-0.225,  6.385),   # hold LEFT past first obstacle row (y=38.94)
-        (+0.185,  6.795),   # 45° cross to RIGHT (Δ=0.41)
-        (+0.185,  8.515),   # hold RIGHT past second obstacle row (y=40.94)
-        (0.0,     8.700),   # 45° back to column
-    ],
-    "36.04": [
-        (0.0,     2.0),     # stay on column
-        (+0.185,  2.185),   # 45° jog RIGHT
-        (+0.185,  3.585),   # hold past first obstacle row (y=38.94)
-        (-0.225,  3.995),   # cross to LEFT
-        (-0.225,  5.675),   # hold past second obstacle row (y=40.94)
-        (0.0,     5.900),   # back to column
-    ],
-}
-
-BANDS = (33.24, 36.04, 38.94, 40.94)
+# Shallow-band y-values per side (the via rows we need to dodge).
+SHALLOW_J2 = (38.94, 40.94)
+SHALLOW_J1 = (62.99, 60.99)
+DEEP_J2 = (33.24, 36.04)
+DEEP_J1 = (68.69, 65.89)
 
 
-def band_for(y):
-    """Snap a via y to its nearest band key; None if no band is in range."""
-    for b in BANDS:
+def band_for(y, choices):
+    """Return the band value (one of `choices`) that y is closest to within
+    0.05 mm tolerance, or None."""
+    for b in choices:
         if abs(y - b) < 0.05:
-            return f"{b:.2f}"
+            return b
     return None
 
 
-def route_with_plan(ax, ay, bx, by):
-    """Polyline from A to B following the band's jog plan, mirrored top/bottom.
+def nearest_obstacle_dx(col_x, obstacle_row_y, obstacles):
+    """Among `obstacles` (list of (ox, oy, orad)) sitting on `obstacle_row_y`,
+    return the signed Δx (ox − col_x) of the column closest to `col_x`.
+    Returns None if no obstacle on that row."""
+    best = None
+    for ox, oy, orad in obstacles:
+        if abs(oy - obstacle_row_y) > 0.05:
+            continue
+        dx = ox - col_x
+        if best is None or abs(dx) < abs(best[0]):
+            best = (dx, orad)
+    return best   # (dx, orad) or None
 
-    Vias in the shallow bands (38.94, 40.94) get a single straight segment —
-    they're on a different inner layer and don't need to dodge.
+
+def build_fanout(col_x, via_y, sign, obstacle_rows, obstacles, half_w):
+    """Build the fanout waypoint list for one side of the trace, from the
+    via outward toward the middle of the board.
+
+    Args:
+        col_x: trace column x position.
+        via_y: starting via y position.
+        sign:  +1 if traveling toward larger y (J2/top fanout going down),
+               −1 if traveling toward smaller y (J1/bottom fanout going up).
+        obstacle_rows: list of y-values of the obstacle rows (in order
+            of distance from via — nearest first).
+        obstacles: list of (ox, oy, orad) for the layer.
+        half_w: half of the track width.
+
+    Returns: list of (x, y) waypoints starting at the via and ending at the
+        first "on-column" point past the last obstacle.
     """
-    # Decide which via is "top" (smaller y in board coordinates).
+    pts = [(col_x, via_y)]
+    cur_offset = 0.0
+    for row_idx, row_y in enumerate(obstacle_rows):
+        info = nearest_obstacle_dx(col_x, row_y, obstacles)
+        if info is None:
+            continue
+        dx_obs, orad = info
+        needed = orad + CLEARANCE + half_w + DETOUR_PAD
+        if abs(dx_obs) >= needed:
+            # Already clear at the column; no jog needed for this row.
+            continue
+        # Target offset on the side opposite the obstacle.
+        offset_mag = needed - abs(dx_obs)
+        target_offset = -math.copysign(offset_mag, dx_obs)
+        # Turn earlier than strictly geometrically required so the diagonal
+        # corner has slack from the obstacle. `offset_mag` is the minimum;
+        # add JOG_LEAD_IN for extra margin matching the hand-routed pattern.
+        delta = target_offset - cur_offset
+        jog_arrival_y = row_y - sign * (offset_mag + JOG_LEAD_IN)
+        jog_start_y = jog_arrival_y - sign * abs(delta)
+        # Emit the jog start (on column at cur_offset) and the jog arrival.
+        pts.append((col_x + cur_offset, jog_start_y))
+        pts.append((col_x + target_offset, jog_arrival_y))
+        cur_offset = target_offset
+    # Final return to column past the last obstacle (symmetric to entry).
+    if abs(cur_offset) > 1e-9 and obstacle_rows:
+        last_row_y = obstacle_rows[-1]
+        offset_mag = abs(cur_offset)
+        hold_end_y = last_row_y + sign * (offset_mag + JOG_LEAD_IN)
+        return_y = hold_end_y + sign * offset_mag
+        pts.append((col_x + cur_offset, hold_end_y))
+        pts.append((col_x, return_y))
+    return pts
+
+
+def route_with_plan(ax, ay, bx, by, track_width, obstacles):
+    """Polyline from A to B with 45° jogs around each shallow-band obstacle.
+    Deep-band nets get jogs computed from their column's position relative
+    to the actual obstacle columns; shallow-band nets go straight through.
+    """
     if ay < by:
         top_x, top_y, bot_x, bot_y = ax, ay, bx, by
     else:
         top_x, top_y, bot_x, bot_y = bx, by, ax, ay
 
-    top_band = band_for(top_y)
-    bot_band = band_for(bot_y)
-    plan = JOG_PLANS.get(top_band)
-    bot_plan = JOG_PLANS.get(bot_band, plan)
-
-    # Shallow band or unknown band — straight through.
-    if plan is None:
+    half_w = track_width / 2.0
+    top_deep = band_for(top_y, DEEP_J2) is not None
+    bot_deep = band_for(bot_y, DEEP_J1) is not None
+    if not (top_deep or bot_deep):
         return [(ax, ay), (bx, by)]
 
-    pts = [(top_x, top_y)]
-    for dx, dy in plan:
-        pts.append((top_x + dx, top_y + dy))
-    # Connect to the start of the bottom-side mirror.
-    bot_max_dy = max(dy for _, dy in bot_plan)
-    pts.append((top_x + plan[-1][0], bot_y - bot_max_dy))
-    for dx, dy in reversed(bot_plan):
-        pts.append((top_x + dx, bot_y - dy))
-    pts.append((bot_x, bot_y))
+    # The trace's column x is the average of the two via x's (they're
+    # nearly identical for flex pass-through).
+    col_x = (top_x + bot_x) / 2
+
+    # Top fanout (going from top via DOWN, sign=+1). Obstacle rows = J2
+    # shallow rows, sorted by distance from top via.
+    top_rows = sorted(SHALLOW_J2, key=lambda r: abs(r - top_y)) if top_deep else []
+    top_pts = build_fanout(col_x, top_y, +1, top_rows, obstacles, half_w)
+    # Re-anchor first point to the actual top via x (might differ slightly
+    # from col_x due to the 0.02 mm stagger between top/bot via positions).
+    top_pts[0] = (top_x, top_y)
+
+    # Bottom fanout (going from bot via UP, sign=−1).
+    bot_rows = sorted(SHALLOW_J1, key=lambda r: abs(r - bot_y)) if bot_deep else []
+    bot_pts = build_fanout(col_x, bot_y, -1, bot_rows, obstacles, half_w)
+    bot_pts[0] = (bot_x, bot_y)
+    # The bottom fanout starts at the bot via and goes toward the middle;
+    # we need to reverse it so we can append after the top fanout.
+    bot_pts.reverse()
+
+    pts = top_pts + bot_pts
 
     deduped = [pts[0]]
     for p in pts[1:]:
@@ -178,9 +244,8 @@ def route_with_plan(ax, ay, bx, by):
 
 
 def route_around_vias(ax, ay, bx, by, track_width, obstacles):
-    """Compatibility shim: the band-based plan already encodes obstacle
-    avoidance, so ignore the obstacles parameter."""
-    return route_with_plan(ax, ay, bx, by)
+    """Entry point used by the main rewriter."""
+    return route_with_plan(ax, ay, bx, by, track_width, obstacles)
 
 
 def fmt(v):
