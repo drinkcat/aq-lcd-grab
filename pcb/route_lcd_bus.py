@@ -48,9 +48,14 @@ DETOUR_PAD = 0.005  # mm, extra slack on the perpendicular offset magnitude
 JOG_LEAD_IN = 0.05  # mm, extra longitudinal slack so the diagonal corner
                     # sits clearly outside the obstacle's clearance circle —
                     # "turn earlier" margin
-SCRIPT_WIDTH = 0.1  # mm, the trace width used by this script. Segments of
-                    # any other width are treated as hand-routed and left
-                    # untouched.
+# Per-layer trace widths owned by this script. Segments whose (layer, width)
+# pair isn't here are treated as hand-routed and left untouched. B.Cu uses a
+# slightly wider trace to satisfy outer-layer DRC.
+SCRIPT_LAYER_WIDTH = {
+    "In1.Cu": 0.1,
+    "In2.Cu": 0.1,
+    "B.Cu":   0.13,
+}
 
 TOK = re.compile(r'\(|\)|"(?:[^"\\]|\\.)*"|[^\s()"]+', re.DOTALL)
 
@@ -275,27 +280,23 @@ def route_through_obstacles(ax, ay, bx, by, track_width, obstacles):
         candidates.append((oy, dx_obs, orad, needed))
     candidates.sort()    # by y ascending
 
+    # Per-obstacle tight dogleg: column → 45° out → quickly past the
+    # obstacle → 45° back to column. Each obstacle gets its own dogleg
+    # so the trace returns to the central lane between obstacles.
     pts = [(top_x, top_y)]
-    cur_offset = 0.0
     for oy, dx_obs, orad, needed in candidates:
-        # Target offset on the side opposite the obstacle.
         offset_mag = needed - abs(dx_obs)
         target_offset = -math.copysign(offset_mag, dx_obs)
-        if abs(target_offset - cur_offset) < 1e-9:
-            continue
-        delta = target_offset - cur_offset
-        # Arrive at target_offset by y = oy − (offset_mag + JOG_LEAD_IN).
+        # Arrive at target_offset slightly before the obstacle's y (lead-in
+        # keeps the diagonal corner outside the clearance circle), then
+        # exit symmetrically.
         jog_arrival_y = oy - (offset_mag + JOG_LEAD_IN)
-        jog_start_y = jog_arrival_y - abs(delta)
-        pts.append((col_x + cur_offset, jog_start_y))
-        pts.append((col_x + target_offset, jog_arrival_y))
-        # Hold offset through the obstacle.
+        jog_start_y = jog_arrival_y - offset_mag
         hold_end_y = oy + (offset_mag + JOG_LEAD_IN)
+        return_y = hold_end_y + offset_mag
+        pts.append((col_x, jog_start_y))
+        pts.append((col_x + target_offset, jog_arrival_y))
         pts.append((col_x + target_offset, hold_end_y))
-        cur_offset = target_offset
-    # Return to column for the final approach to bottom via.
-    if abs(cur_offset) > 1e-9:
-        return_y = pts[-1][1] + abs(cur_offset)
         pts.append((col_x, return_y))
     pts.append((bot_x, bot_y))
 
@@ -308,9 +309,10 @@ def route_through_obstacles(ax, ay, bx, by, track_width, obstacles):
 
 def route_around_vias(ax, ay, bx, by, track_width, obstacles, layer=None):
     """Entry point used by the main rewriter. Dispatches based on layer:
-    In2.Cu nets get the endpoint-fanout treatment; In1.Cu nets get mid-run
-    obstacle dodging for the staggered escape vias on adjacent columns."""
-    if layer == "In1.Cu":
+    In2.Cu (deep-band) nets get the endpoint-fanout treatment; In1.Cu and
+    B.Cu nets — the shallow-band routes that pass through the staggered
+    escape-via region — get mid-run obstacle dodging."""
+    if layer in ("In1.Cu", "B.Cu"):
         return route_through_obstacles(ax, ay, bx, by, track_width, obstacles)
     return route_with_plan(ax, ay, bx, by, track_width, obstacles)
 
@@ -415,8 +417,11 @@ def main():
     FLEX_BAND_YS = (33.24, 36.04, 38.94, 40.94, 60.99, 62.99, 65.89, 68.69)
 
     def is_flex_pair_via(via):
+        # Flex pass-through vias land EXACTLY on a flex-band y; hand-routed
+        # vias snap to whatever the user clicks, so a tight tolerance keeps
+        # them from being misidentified as flex pairs.
         vy = float(via["fields"]["at"][1])
-        return any(abs(vy - b) < 0.05 for b in FLEX_BAND_YS)
+        return any(abs(vy - b) < 0.001 for b in FLEX_BAND_YS)
 
     def flex_col_x(net):
         """Average x of the net's two flex-band (pass-through) vias."""
@@ -464,22 +469,34 @@ def main():
                   file=sys.stderr)
             continue
         # Only width-0.1 inner segments are "ours". Anything else (e.g.
-        # 0.2-width hand routes you've added on top of the flex pass-through
-        # net) we leave alone — don't delete, don't replace.
-        inner = [s for s in segments_by_net[net]
-                 if unq(s["fields"]["layer"][0]) != "F.Cu"
-                 and abs(float(s["fields"]["width"][0]) - SCRIPT_WIDTH) < 1e-6]
+        # Hand routes are anything that's NOT at one of the script's allowed
+        # widths for its layer. Also accept the historical 0.1 width on any
+        # script layer so re-routing transitions cleanly when the configured
+        # widths change.
+        SCRIPT_LEGACY_WIDTHS = {0.1}
+
+        def is_script_segment(s):
+            layer = unq(s["fields"]["layer"][0])
+            width = float(s["fields"]["width"][0])
+            if layer == "F.Cu" or layer not in SCRIPT_LAYER_WIDTH:
+                return False
+            expected = SCRIPT_LAYER_WIDTH[layer]
+            if abs(width - expected) < 1e-6:
+                return True
+            return any(abs(width - w) < 1e-6 for w in SCRIPT_LEGACY_WIDTHS)
+
+        inner = [s for s in segments_by_net[net] if is_script_segment(s)]
         if not inner:
-            print(f"SKIP {net}: no width-{SCRIPT_WIDTH} inner segments "
+            print(f"SKIP {net}: no script-owned inner segments "
                   f"to straighten", file=sys.stderr)
             continue
 
-        # All script-owned segments should share a single inner layer.
+        # All script-owned segments for one net should share a single layer.
         inner_layers = {unq(s["fields"]["layer"][0]) for s in inner}
         assert len(inner_layers) == 1, \
             f"{net}: mixed inner layers {inner_layers}"
         inner_layer = next(iter(inner_layers))
-        width = SCRIPT_WIDTH
+        width = SCRIPT_LAYER_WIDTH[inner_layer]
 
         ax = float(vias[0]["fields"]["at"][0])
         ay = float(vias[0]["fields"]["at"][1])
