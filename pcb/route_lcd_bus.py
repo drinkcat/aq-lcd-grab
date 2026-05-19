@@ -48,6 +48,9 @@ DETOUR_PAD = 0.005  # mm, extra slack on the perpendicular offset magnitude
 JOG_LEAD_IN = 0.05  # mm, extra longitudinal slack so the diagonal corner
                     # sits clearly outside the obstacle's clearance circle —
                     # "turn earlier" margin
+SCRIPT_WIDTH = 0.1  # mm, the trace width used by this script. Segments of
+                    # any other width are treated as hand-routed and left
+                    # untouched.
 
 TOK = re.compile(r'\(|\)|"(?:[^"\\]|\\.)*"|[^\s()"]+', re.DOTALL)
 
@@ -353,14 +356,34 @@ def make_via(x, y, net, size=0.5, drill=0.25,
 # signal up on F.Cu or B.Cu. Order is "DB1 furthest down (largest y), then
 # DB3, DB5, ... stepping upward" — adjacent vias staggered in y so
 # horizontal traces can fan between them without crowding.
-ESCAPE_Y_START = 54.0    # mm, DB1's via y
-ESCAPE_Y_STEP = 0.3      # mm, decrement per net within a row
+ESCAPE_Y_START = 57.0    # mm, DB1's via y
+ESCAPE_Y_STEP = 0.6      # mm, decrement per net within a row
 ESCAPE_Y_ROW_GAP = 2.4   # mm, vertical gap between the two staggered rows
                          # — sized so row 2's topmost via (DB3) sits clearly
                          # below row 1's bottommost via (DB15), leaving a
                          # horizontal lane for In1.Cu escape routes
 ODD_DB_ESCAPE_ORDER = ("DB1", "DB3", "DB5", "DB7",
                        "DB9", "DB11", "DB13", "DB15")
+
+
+def odd_db_escape_y(net):
+    """Return the staggered escape-via y for one of the odd-DB nets, or
+    None if `net` isn't in the schedule."""
+    if net not in ODD_DB_ESCAPE_ORDER:
+        return None
+    idx = ODD_DB_ESCAPE_ORDER.index(net)
+    y = ESCAPE_Y_START - idx * ESCAPE_Y_STEP - ESCAPE_Y_STEP
+    if idx % 2 == 1:
+        y -= ESCAPE_Y_ROW_GAP
+    return y
+
+
+# Additional escape vias for non-DB nets. Each entry is (net_name, y);
+# y can be a number or a callable() -> float so it can track the layout.
+EXTRA_ESCAPE_VIAS = (
+    # DC sits one ESCAPE_Y_STEP above DB15 (the topmost staggered via).
+    ("DC", lambda: odd_db_escape_y("DB15") - ESCAPE_Y_STEP),
+)
 
 
 def main():
@@ -395,6 +418,42 @@ def main():
         vy = float(via["fields"]["at"][1])
         return any(abs(vy - b) < 0.05 for b in FLEX_BAND_YS)
 
+    def flex_col_x(net):
+        """Average x of the net's two flex-band (pass-through) vias."""
+        pair = [v for v in vias_by_net.get(net, []) if is_flex_pair_via(v)]
+        if len(pair) != 2:
+            return None
+        return sum(float(v["fields"]["at"][0]) for v in pair) / 2
+
+    # Pre-compute where the new escape vias will go and add them to
+    # `all_vias` so the routing loop treats them as obstacles. (Without
+    # this, the first run after `git restore` doesn't know about escape
+    # vias that haven't been placed in the file yet.)
+    planned_escapes = []   # list of (net, x, y, radius)
+    for idx, net in enumerate(ODD_DB_ESCAPE_ORDER):
+        cx = flex_col_x(net)
+        if cx is None:
+            continue
+        target_y = ESCAPE_Y_START - idx * ESCAPE_Y_STEP
+        if idx % 2 == 1:
+            target_y -= ESCAPE_Y_ROW_GAP
+        planned_escapes.append((net, cx, target_y, 0.25))   # 0.5/2
+    for net, y_spec in EXTRA_ESCAPE_VIAS:
+        cx = flex_col_x(net)
+        if cx is None:
+            continue
+        target_y = y_spec() if callable(y_spec) else y_spec
+        planned_escapes.append((net, cx, target_y, 0.25))
+    # Strip any vias on these nets that aren't flex-pair (i.e., stale
+    # escapes) from all_vias so we don't double-count them; then add the
+    # planned positions.
+    planned_nets = {p[0] for p in planned_escapes}
+    all_vias = [v for v in all_vias
+                if v[3] not in planned_nets
+                or any(abs(v[1] - b) < 0.05 for b in FLEX_BAND_YS)]
+    for net, cx, cy, r in planned_escapes:
+        all_vias.append((cx, cy, r, net))
+
     for net in FLEX_NETS:
         # Filter to the actual flex pass-through vias (top + bottom); ignore
         # any escape vias or other extras that may have been added.
@@ -404,23 +463,23 @@ def main():
             print(f"SKIP {net}: {len(vias)} flex-band vias (expected 2)",
                   file=sys.stderr)
             continue
+        # Only width-0.1 inner segments are "ours". Anything else (e.g.
+        # 0.2-width hand routes you've added on top of the flex pass-through
+        # net) we leave alone — don't delete, don't replace.
         inner = [s for s in segments_by_net[net]
-                 if unq(s["fields"]["layer"][0]) != "F.Cu"]
+                 if unq(s["fields"]["layer"][0]) != "F.Cu"
+                 and abs(float(s["fields"]["width"][0]) - SCRIPT_WIDTH) < 1e-6]
         if not inner:
-            print(f"SKIP {net}: no inner-layer segments to straighten",
-                  file=sys.stderr)
+            print(f"SKIP {net}: no width-{SCRIPT_WIDTH} inner segments "
+                  f"to straighten", file=sys.stderr)
             continue
 
-        # Inner segments for a flex net should share a single layer & width;
-        # otherwise the net was hand-routed in a way this script wasn't
-        # designed for, and we'd rather bail than silently merge.
+        # All script-owned segments should share a single inner layer.
         inner_layers = {unq(s["fields"]["layer"][0]) for s in inner}
-        widths = {float(s["fields"]["width"][0]) for s in inner}
         assert len(inner_layers) == 1, \
             f"{net}: mixed inner layers {inner_layers}"
-        assert len(widths) == 1, f"{net}: mixed widths {widths}"
         inner_layer = next(iter(inner_layers))
-        width = next(iter(widths))
+        width = SCRIPT_WIDTH
 
         ax = float(vias[0]["fields"]["at"][0])
         ay = float(vias[0]["fields"]["at"][1])
@@ -497,6 +556,36 @@ def main():
         anchor = flex_pair[0]["start"]
         # Walk back to the line start so the new via lands at top-level
         # indent, not inside the previous via's content.
+        while anchor > 0 and src[anchor - 1] == "\t":
+            anchor -= 1
+        inserts.append((anchor, make_via(col_x, target_y, net)))
+        print(f"  ESCAPE {net}: via at ({col_x:.4f}, {target_y:.4f})"
+              + (f" (removed {len(old_escapes)} stale)" if old_escapes else ""))
+
+    # Extra escape vias for non-DB nets (e.g., DC). Same idempotent
+    # remove-and-replace pattern as the odd-DB loop above.
+    for net, y_spec in EXTRA_ESCAPE_VIAS:
+        target_y = y_spec() if callable(y_spec) else y_spec
+        existing = vias_by_net.get(net, [])
+        flex_pair = [v for v in existing
+                     if any(abs(float(v["fields"]["at"][1]) - b) < 0.05
+                            for b in (33.24, 36.04, 65.89, 68.69))]
+        old_escapes = [v for v in existing if v not in flex_pair]
+        if len(flex_pair) != 2:
+            print(f"  ESCAPE {net}: expected 2 flex vias, got "
+                  f"{len(flex_pair)} — skipping", file=sys.stderr)
+            continue
+        for v in old_escapes:
+            start = v["start"]
+            while start > 0 and src[start - 1] == "\t":
+                start -= 1
+            end = v["end"]
+            if end < len(src) and src[end] == "\n":
+                end += 1
+            deletes.append((start, end))
+        xs = [float(v["fields"]["at"][0]) for v in flex_pair]
+        col_x = sum(xs) / len(xs)
+        anchor = flex_pair[0]["start"]
         while anchor > 0 and src[anchor - 1] == "\t":
             anchor -= 1
         inserts.append((anchor, make_via(col_x, target_y, net)))
