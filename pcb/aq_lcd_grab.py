@@ -3,14 +3,16 @@
 Scope:
   - Two 39-pin flex connectors as a straight pass-through between the
     target main board and the LCD.
-  - STM32F030C8T6 capture MCU (LQFP-48) tapping the display bus. See
+  - STM32F103C8T6 capture MCU (LQFP-48) tapping the display bus. See
     docs/pcb_spec.md for the rationale (JLCPCB basic-library part, no
-    external SMPS, internal flash drops the UART-boot dance).
+    external SMPS, internal flash drops the UART-boot dance; chose
+    F103 over the briefly-considered F030 for 20 kB SRAM + Cortex-M3).
   - Xiao ESP32-C6 (DIP-mount module) for WiFi + STM32 reflashing over
     USART1.
   - 3-pin connector to the target main board for 3V3 tap + PIC32 reset.
   - SWD header on the STM32 for bring-up / fallback flashing.
-  - Status LED on STM32 PB2 plus USART2 + spare-GPIO bring-up pads.
+  - Status LED on STM32 PB5 (PB2 is the F103 BOOT1 latch and must stay
+    pulled low) plus USART2 + spare-GPIO bring-up pads.
 
 Connectors:
   - J1: main-board side flex   (cable to the target PIC32 motherboard)
@@ -31,17 +33,22 @@ mirrored numbering). Pins whose function is uncertain keep generic
 
 Refdes scheme (renumbered for the STM32 design — no carryover from the
 prior RP2350 draft):
-  - C1–C5  : STM32 decoupling (VDD ×2, VDDA HF + bulk, NRST)
+  - C1–C4  : STM32 VDD decoupling (one 100 nF per VDD pin: pins 1/24/36/48)
+  - C5     : STM32 VDDA HF (100 nF)
+  - C6     : STM32 VDDA LF (1 µF)
+  - C7     : STM32 3V3 bulk (4.7 µF)
+  - C8     : STM32 NRST filter (100 nF, AN2586 §2.3.3 EMS)
   - C10–C11: ESP32 bulk caps (22 µF + 100 µF, WiFi TX transients)
   - R1     : BOOT0 pulldown (10 kΩ)
-  - R2     : STM32 status LED series resistor (1 kΩ)
+  - R2     : BOOT1/PB2 pulldown (10 kΩ — must be 0 at reset, AN2586 §4.1)
+  - R3     : STM32 status LED series resistor (1 kΩ)
   - D1     : STM32 status LED
 """
 
 import os
 
 # SKiDL needs to know where KiCad's symbol libraries live so it can resolve
-# stock symbols like Connector:Conn_01x39_Socket and MCU_ST_STM32F0:STM32F030C8Tx.
+# stock symbols like Connector:Conn_01x39_Socket and MCU_ST_STM32F1:STM32F103C8Tx.
 os.environ.setdefault("KICAD9_SYMBOL_DIR", "/usr/share/kicad/symbols")
 
 from skidl import Part, Net, generate_netlist, lib_search_paths, KICAD9
@@ -159,48 +166,55 @@ J3[3] += PIC32_RESET
 
 
 # =============================================================================
-# STM32F030C8T6 (LQFP-48) — capture MCU
+# STM32F103C8T6 (LQFP-48) — capture MCU
 # =============================================================================
-# Pin map verified against datasheet Tables 11/12/13 (see docs/pcb_spec.md
-# "Pin map (proposal)"). LQFP-48 footprint from KiCad stock library; no
-# exposed pad (the bare LQFP-48 variant, not LQFP-48-1EP).
-U1 = Part("MCU_ST_STM32F0", "STM32F030C8Tx",
+# Pin map verified against DS5319 Table 5 (see docs/pcb_spec.md "Pin
+# map (proposal)"). LQFP-48 footprint from KiCad stock library; no
+# exposed pad. The F103 LQFP-48 pinout matches F030 LQFP-48 for every
+# pin we use, except: pin 1 is VBAT (not VDD), pin 35/36 is an extra
+# VSS/VDD pair (replaces F030's PF6/PF7), and PB2 is the BOOT1 latch
+# (must be held low at reset; cannot drive the LED).
+U1 = Part("MCU_ST_STM32F1", "STM32F103C8Tx",
           footprint="Package_QFP:LQFP-48_7x7mm_P0.5mm",
           ref="U1",
           tag="U1_STM32")
 
 # --- Power pins ---------------------------------------------------------
-# VDD: pins 1, 24, 48. VDDA: pin 9. VSS: pins 23, 47. VSSA: pin 8.
-for pad_num in (1, 24, 48):
+# VDD: pins 24, 36, 48. VBAT: pin 1 (tied to VDD — no battery).
+# VDDA: pin 9. VSS: pins 23, 35, 47. VSSA: pin 8.
+for pad_num in (1, 24, 36, 48):
     U1[pad_num] += P3V3
 U1[9] += P3V3       # VDDA tied to VDD (no separate analog rail)
 U1[8] += GND        # VSSA
-for pad_num in (23, 47):
+for pad_num in (23, 35, 47):
     U1[pad_num] += GND
 
-# Decoupling per AN4325 §2.1:
-#   - 100 nF per VDD pin (×2 on LQFP-48: pins 24, 48 — pin 1 shares the
-#     pair as the package is small enough that one cap couples to both
-#     adjacent VDDs; we place one per pin anyway).
+# Decoupling per AN2586 §2.2:
+#   - 100 nF per VDD pin (×3: pins 24, 36, 48) + 1× 100 nF on VBAT
+#     (pin 1, tied to VDD as we have no battery).
 #   - 100 nF + 1 µF on VDDA (close to pin 9).
 #   - 4.7 µF bulk on the 3V3 rail near the chip.
-C1 = C("100n", "C1", "C_STM32_VDD_PIN24")
+C1 = C("100n", "C1", "C_STM32_VBAT_PIN1")
 C1[1] += P3V3; C1[2] += GND
-C2 = C("100n", "C2", "C_STM32_VDD_PIN48")
+C2 = C("100n", "C2", "C_STM32_VDD_PIN24")
 C2[1] += P3V3; C2[2] += GND
-C3 = C("100n", "C3", "C_STM32_VDDA_HF")
+C3 = C("100n", "C3", "C_STM32_VDD_PIN36")
 C3[1] += P3V3; C3[2] += GND
-C4 = C("1u", "C4", "C_STM32_VDDA_LF")
+C4 = C("100n", "C4", "C_STM32_VDD_PIN48")
 C4[1] += P3V3; C4[2] += GND
-C5 = C("4.7u", "C5", "C_STM32_3V3_BULK")
+C5 = C("100n", "C5", "C_STM32_VDDA_HF")
 C5[1] += P3V3; C5[2] += GND
+C6 = C("1u", "C6", "C_STM32_VDDA_LF")
+C6[1] += P3V3; C6[2] += GND
+C7 = C("4.7u", "C7", "C_STM32_3V3_BULK")
+C7[1] += P3V3; C7[2] += GND
 
 # --- Reset / boot ------------------------------------------------------
-# NRST (pin 7): internal pull-up; AN4325 recommends 100 nF to GND for
-# noise immunity. ESP32 drives this open-drain (see ESP32 section).
+# NRST (pin 7): internal pull-up; AN2586 §2.3.3 recommends 100 nF to
+# GND for EMS. ESP32 drives this open-drain (see ESP32 section).
 NRST = Net("NRST")
 U1[7] += NRST
-C_NRST = C("100n", "C6", "C_STM32_NRST_FILTER")
+C_NRST = C("100n", "C8", "C_STM32_NRST_FILTER")
 C_NRST[1] += NRST; C_NRST[2] += GND
 
 # BOOT0 (pin 44): 10 kΩ pull-down so the chip boots from user flash by
@@ -209,6 +223,16 @@ BOOT0 = Net("BOOT0")
 U1[44] += BOOT0
 R_BOOT0 = R("10k", "R1", "R_BOOT0_PULLDOWN")
 R_BOOT0[1] += BOOT0; R_BOOT0[2] += GND
+
+# BOOT1 / PB2 (pin 20): on F103 the BOOT1 latch is muxed with PB2, and
+# both boot modes we use require BOOT1=0 (AN2586 §4.1). A 10 kΩ
+# pull-down to GND on PB2 holds the latch low before firmware
+# configures the pin. PB2 is **not** wired as the status LED here
+# (the F030 draft did; that would have forced BOOT1=1 at reset).
+BOOT1 = Net("BOOT1")
+U1[20] += BOOT1
+R_BOOT1 = R("10k", "R2", "R_BOOT1_PULLDOWN")
+R_BOOT1[1] += BOOT1; R_BOOT1[2] += GND
 
 # --- SWD header (3-pin) ------------------------------------------------
 # Pinout mirrors the prior board's convention: pin 1 SWCLK, pin 2 GND,
@@ -239,9 +263,10 @@ U1[31] += UART_STM_RX               # PA10
 # Display capture tap (flex bus -> STM32)
 # =============================================================================
 # DB0..DB7 land on PA0..PA7 (LQFP-48 pins 10..17, one contiguous edge).
-# DB8..DB15 land on PB8..PB15. WR -> PA12 (TIM1_ETR, AF2). DC -> PB0,
-# CS -> PB1. See docs/pcb_spec.md "Pin map (proposal)" / Q13 for the
-# rationale and routing notes.
+# DB8..DB15 land on PB8..PB15. WR -> PA12 (TIM1_ETR — default function
+# on F103, no AFIO remap needed). DC -> PB0, CS -> PB1. See
+# docs/pcb_spec.md "Pin map (proposal)" / Q13 for the rationale and
+# routing notes.
 #
 # Software is indifferent to the *physical* pin-order of DB8..DB15 — it
 # reads GPIOB->IDR and the firmware decides which bit is "DBn". We
@@ -265,7 +290,7 @@ CAPTURE_TAP = [
     (26, "DB13"),   # PB13
     (27, "DB14"),   # PB14
     (28, "DB15"),   # PB15
-    (33, "WR"),     # PA12 — TIM1_ETR (AF2), sample clock
+    (33, "WR"),     # PA12 — TIM1_ETR (default), sample clock
     (18, "DC"),     # PB0  — command/data framing line
     (19, "CS"),     # PB1  — chip select
 ]
@@ -274,13 +299,13 @@ for pad, label in CAPTURE_TAP:
 
 
 # =============================================================================
-# Status LED on STM32 PB2 (pin 20)
+# Status LED on STM32 PB5 (pin 41)
 # =============================================================================
+# PB5 is free of boot-strap meaning (unlike PB2 = BOOT1, see above).
 # Anode -> 1 kΩ -> 3V3, cathode -> GPIO (active-low drive). GPIO sinks
-# current; LED is off until firmware drives PB2 low. Same topology as
-# the prior RP2350 design (familiar polarity, same BOM line).
+# current; LED is off until firmware drives PB5 low.
 LED_STATUS = Net("LED_STATUS")
-R_LED = R("1k", "R2", "R_LED_STATUS")
+R_LED = R("1k", "R3", "R_LED_STATUS")
 D_LED = Part("Device", "LED",
              value="GREEN",
              footprint="LED_SMD:LED_0603_1608Metric",
@@ -288,8 +313,8 @@ D_LED = Part("Device", "LED",
              tag="D1_LED_STATUS")
 R_LED[1] += P3V3
 R_LED[2] += D_LED[1]      # anode
-D_LED[2] += LED_STATUS    # cathode -> PB2
-U1[20] += LED_STATUS
+D_LED[2] += LED_STATUS    # cathode -> PB5
+U1[41] += LED_STATUS
 
 
 # =============================================================================
@@ -301,13 +326,15 @@ U1[20] += LED_STATUS
 # test points". Lift DB2/DB3 from the flex if you actually want to use
 # USART2; default builds keep them as data bits.
 #
-# PB3–PB5 are free GPIOs intended as scope-probe points during bring-up.
+# PB3, PB4 are free GPIOs intended as scope-probe points during
+# bring-up. Note: on F103 these default to JTAG (PB3=JTDO, PB4=NJTRST);
+# firmware must write `AFIO_MAPR.SWJ_CFG=010` early to disable JTAG-DP
+# and free them as plain GPIO (we use SWD only, not JTAG).
 TEST_POINTS = [
     (12, "TP1", "TP_PA2_USART2_TX"),   # PA2 — shared with DB2
     (13, "TP2", "TP_PA3_USART2_RX"),   # PA3 — shared with DB3
-    (39, "TP3", "TP_PB3"),
-    (40, "TP4", "TP_PB4"),
-    (41, "TP5", "TP_PB5"),
+    (39, "TP3", "TP_PB3"),             # JTDO — needs JTAG disabled
+    (40, "TP4", "TP_PB4"),             # NJTRST — needs JTAG disabled
 ]
 for pad_num, ref, tag in TEST_POINTS:
     tp = Part("Connector", "TestPoint",
