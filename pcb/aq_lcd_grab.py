@@ -262,37 +262,49 @@ U1[31] += UART_STM_RX               # PA10
 # =============================================================================
 # Display capture tap (flex bus -> STM32)
 # =============================================================================
-# DB0..DB7 land on PA0..PA7 (LQFP-48 pins 10..17, one contiguous edge).
-# DB8..DB15 land on PB8..PB15. WR -> PA12 (TIM1_ETR — default function
-# on F103, no AFIO remap needed). DC -> PB0, CS -> PB1. See
-# docs/pcb_spec.md "Pin map (proposal)" / Q13 for the rationale and
-# routing notes.
+# Capture path reads `GPIOA->IDR` and `GPIOB->IDR` as whole 16-bit
+# ports via two DMA channels (see docs/pcb_spec.md Q12). The *logical*
+# DBn identity of any given STM32 pad is therefore not load-bearing —
+# the host decoder applies a permutation, derived from this very table,
+# that undoes whatever order we pick here. Routing is free to swap DBn
+# labels between entries within the same port (PA0..PA7 stay PA pins,
+# PB-pins stay PB pins); changing the table here is the only thing
+# needed to retarget the host decoder. See docs/pcb_spec.md
+# "Pin allocation (rules, not a fixed map)" and Q17.
 #
-# Software is indifferent to the *physical* pin-order of DB8..DB15 — it
-# reads GPIOB->IDR and the firmware decides which bit is "DBn". We
-# keep the assignment dense (PB8=DB8, PB15=DB15) so the read is a plain
-# `(idr >> 8) & 0xff`, no per-bit shuffle.
+# What is *forced* by silicon:
+#   - WR -> PA12 (TIM1_ETR; no AFIO remap on F103).
+#   - DC and CS must be on PB pins so they ride along in the same
+#     `GPIOB->IDR` DMA read as the PB-half of the data bus.
+#   - 8 data bits must land on PA pins, 8 on PB pins; mixing across
+#     ports would require an extra cross-port merge on the host.
+#
+# Everything else (which specific PA pin gets DB0, which PB pin gets
+# DC, etc.) is router's choice.
 CAPTURE_TAP = [
-    # (STM32 pad #, flex net label)
-    (10, "DB0"),    # PA0
-    (11, "DB1"),    # PA1
-    (12, "DB2"),    # PA2
-    (13, "DB3"),    # PA3
-    (14, "DB4"),    # PA4
-    (15, "DB5"),    # PA5
-    (16, "DB6"),    # PA6
-    (17, "DB7"),    # PA7
-    (45, "DB8"),    # PB8
-    (46, "DB9"),    # PB9
-    (21, "DB10"),   # PB10
-    (22, "DB11"),   # PB11
-    (25, "DB12"),   # PB12
-    (26, "DB13"),   # PB13
-    (27, "DB14"),   # PB14
-    (28, "DB15"),   # PB15
-    (33, "WR"),     # PA12 — TIM1_ETR (default), sample clock
-    (18, "DC"),     # PB0  — command/data framing line
-    (19, "CS"),     # PB1  — chip select
+    # (STM32 pad #, flex net label)   STM32 pin   notes
+    # --- PA port (data-bus PA-half) -------------------------------------
+    (10, "DB10"),    # PA0
+    (11, "DB8"),     # PA1
+    (12, "DB6"),     # PA2
+    (13, "DB4"),     # PA3
+    (14, "DB2"),     # PA4
+    (15, "DB0"),     # PA5
+    (16, "DB1"),     # PA6
+    (17, "DB3"),     # PA7
+    # --- PA port (capture trigger, forced) ------------------------------
+    (33, "WR"),      # PA12       TIM1_ETR
+    # --- PB port (data-bus PB-half + control) ---------------------------
+    (18, "DB5"),     # PB0
+    (19, "DB7"),     # PB1
+    (21, "DB9"),     # PB10
+    (22, "DB11"),    # PB11
+    (25, "DB13"),    # PB12
+    (26, "DB15"),    # PB13
+    (27, "DC"),      # PB14       command/data framing line
+    (28, "CS"),      # PB15       chip select
+    (45, "DB12"),    # PB8
+    (46, "DB14"),    # PB9
 ]
 for pad, label in CAPTURE_TAP:
     U1[pad] += flex_nets[label]

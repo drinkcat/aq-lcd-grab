@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/19/2026 02:02 PM")
+    (date "05/19/2026 03:20 PM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -297,7 +297,7 @@
         (field
           (name "SKiDL Tag") "D1_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:309"))
+          (name "SKiDL Line") "aq_lcd_grab.py:321"))
       (libsource
         (lib "Device")
         (part "LED"))
@@ -489,7 +489,7 @@
         (field
           (name "SKiDL Tag") "TP_PA2_USART2_TX")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:340"))
+          (name "SKiDL Line") "aq_lcd_grab.py:352"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -513,7 +513,7 @@
         (field
           (name "SKiDL Tag") "TP_PA3_USART2_RX")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:340"))
+          (name "SKiDL Line") "aq_lcd_grab.py:352"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -537,7 +537,7 @@
         (field
           (name "SKiDL Tag") "TP_PB3")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:340"))
+          (name "SKiDL Line") "aq_lcd_grab.py:352"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -561,7 +561,7 @@
         (field
           (name "SKiDL Tag") "TP_PB4")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:340"))
+          (name "SKiDL Line") "aq_lcd_grab.py:352"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -609,7 +609,7 @@
         (field
           (name "SKiDL Tag") "U2_ESP32C6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:379"))
+          (name "SKiDL Line") "aq_lcd_grab.py:391"))
       (libsource
         (lib "Connector_Generic")
         (part "Conn_01x14"))
@@ -741,7 +741,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "19")
+        (pin "28")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 6)
@@ -757,7 +757,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "10")
+        (pin "15")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 7)
@@ -773,7 +773,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "11")
+        (pin "16")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 8)
@@ -789,7 +789,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "21")
+        (pin "10")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 9)
@@ -821,7 +821,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "25")
+        (pin "45")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 11)
@@ -837,7 +837,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "26")
+        (pin "25")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 12)
@@ -853,7 +853,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "27")
+        (pin "46")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 13)
@@ -869,7 +869,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "28")
+        (pin "26")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 14)
@@ -889,7 +889,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "12")
+        (pin "14")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 15)
@@ -909,7 +909,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "13")
+        (pin "17")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 16)
@@ -925,7 +925,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "14")
+        (pin "13")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 17)
@@ -941,7 +941,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "15")
+        (pin "18")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 18)
@@ -957,7 +957,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "16")
+        (pin "12")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 19)
@@ -973,7 +973,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "17")
+        (pin "19")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 20)
@@ -989,7 +989,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "45")
+        (pin "11")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 21)
@@ -1005,7 +1005,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "46")
+        (pin "21")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 22)
@@ -1021,7 +1021,7 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "18")
+        (pin "27")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 23)
