@@ -284,27 +284,27 @@ U1[31] += UART_STM_RX               # PA10
 CAPTURE_TAP = [
     # (STM32 pad #, flex net label)   STM32 pin   notes
     # --- PA port (data-bus PA-half) -------------------------------------
-    (10, "DB10"),    # PA0
-    (11, "DB8"),     # PA1
-    (12, "DB6"),     # PA2
-    (13, "DB4"),     # PA3
-    (14, "DB2"),     # PA4
-    (15, "DB0"),     # PA5
-    (16, "DB1"),     # PA6
-    (17, "DB3"),     # PA7
+    (10, "DB12"),    # PA0
+    (11, "DB10"),    # PA1
+    (12, "DB8"),     # PA2
+    (13, "DB6"),     # PA3
+    (14, "DB4"),     # PA4
+    (15, "DB2"),     # PA5
+    (16, "DB0"),     # PA6
+    (17, "DB1"),     # PA7
     # --- PA port (capture trigger, forced) ------------------------------
     (33, "WR"),      # PA12       TIM1_ETR
     # --- PB port (data-bus PB-half + control) ---------------------------
     (18, "DB5"),     # PB0
-    (19, "DB7"),     # PB1
-    (21, "DB9"),     # PB10
-    (22, "DB11"),    # PB11
-    (25, "DB13"),    # PB12
-    (26, "DB15"),    # PB13
-    (27, "DC"),      # PB14       command/data framing line
-    (28, "CS"),      # PB15       chip select
-    (45, "DB12"),    # PB8
-    (46, "DB14"),    # PB9
+    (19, "DB9"),     # PB1
+    (21, "DB13"),     # PB10
+    (22, "DB3"),     # PB11
+    (25, "DB7"),    # PB12
+    (26, "DB11"),    # PB13
+    (27, "DB15"),    # PB14
+    (28, "DC"),      # PB15       command/data framing line
+    (45, "DB14"),    # PB8
+    (46, "CS"),      # PB9        chip select
 ]
 for pad, label in CAPTURE_TAP:
     U1[pad] += flex_nets[label]
