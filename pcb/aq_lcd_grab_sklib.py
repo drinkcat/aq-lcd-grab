@@ -46,10 +46,16 @@ aq_lcd_grab = SchLib(tool=SKIDL).add_parts(*[
             Pin(num='37',name='Pin_37',func=pin_types.PASSIVE,unit=1),
             Pin(num='38',name='Pin_38',func=pin_types.PASSIVE,unit=1),
             Pin(num='39',name='Pin_39',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
+        Part(**{ 'name':'R', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'R'}), 'ref_prefix':'R', 'fplist':[''], 'footprint':'Resistor_SMD:R_0402_1005Metric', 'keywords':'R res resistor', 'description':'Resistor', 'datasheet':'', 'pins':[
+            Pin(num='1',func=pin_types.PASSIVE,unit=1),
+            Pin(num='2',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
         Part(**{ 'name':'Conn_01x03_Socket', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'Conn_01x03_Socket'}), 'ref_prefix':'J', 'fplist':[''], 'footprint':'Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical', 'keywords':'connector', 'description':'Generic connector, single row, 01x03, script generated', 'datasheet':'', 'pins':[
             Pin(num='1',name='Pin_1',func=pin_types.PASSIVE,unit=1),
             Pin(num='2',name='Pin_2',func=pin_types.PASSIVE,unit=1),
             Pin(num='3',name='Pin_3',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
+        Part(**{ 'name':'Conn_01x02_Socket', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'Conn_01x02_Socket'}), 'ref_prefix':'J', 'fplist':[''], 'footprint':'Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical', 'keywords':'connector', 'description':'Generic connector, single row, 01x02, script generated', 'datasheet':'', 'pins':[
+            Pin(num='1',name='Pin_1',func=pin_types.PASSIVE,unit=1),
+            Pin(num='2',name='Pin_2',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
         Part(**{ 'name':'STM32F103C8Tx', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'STM32F103C8Tx'}), 'ref_prefix':'U', 'fplist':['Package_QFP:LQFP-48_7x7mm_P0.5mm', 'Package_QFP:LQFP-48_7x7mm_P0.5mm'], 'footprint':'Package_QFP:LQFP-48_7x7mm_P0.5mm', 'keywords':'Arm Cortex-M3 STM32F1 STM32F103', 'description':'STMicroelectronics Arm Cortex-M3 MCU, 64KB flash, 20KB RAM, 72 MHz, 2.0-3.6V, 37 GPIO, LQFP48', 'datasheet':'https://www.st.com/resource/en/datasheet/stm32f103c8.pdf', 'pins':[
             Pin(num='1',name='VBAT',func=pin_types.PWRIN,unit=1),
             Pin(num='2',name='PC13',func=pin_types.BIDIR,unit=1),
@@ -100,9 +106,6 @@ aq_lcd_grab = SchLib(tool=SKIDL).add_parts(*[
             Pin(num='47',name='VSS',func=pin_types.PASSIVE,unit=1),
             Pin(num='48',name='VDD',func=pin_types.PWRIN,unit=1)], 'unit_defs':[] }),
         Part(**{ 'name':'C', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'C'}), 'ref_prefix':'C', 'fplist':[''], 'footprint':'Capacitor_SMD:C_0402_1005Metric', 'keywords':'cap capacitor', 'description':'Unpolarized capacitor', 'datasheet':'', 'pins':[
-            Pin(num='1',func=pin_types.PASSIVE,unit=1),
-            Pin(num='2',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
-        Part(**{ 'name':'R', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'R'}), 'ref_prefix':'R', 'fplist':[''], 'footprint':'Resistor_SMD:R_0402_1005Metric', 'keywords':'R res resistor', 'description':'Resistor', 'datasheet':'', 'pins':[
             Pin(num='1',func=pin_types.PASSIVE,unit=1),
             Pin(num='2',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
         Part(**{ 'name':'Conn_01x03_Pin', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'Conn_01x03_Pin'}), 'ref_prefix':'J', 'fplist':[''], 'footprint':'Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical', 'keywords':'connector', 'description':'Generic connector, single row, 01x03, script generated', 'datasheet':'', 'pins':[

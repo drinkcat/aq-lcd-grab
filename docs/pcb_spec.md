@@ -138,9 +138,12 @@ What must be true (hard constraints):
   44 respectively).
 - **PB2 = BOOT1 latch**: tie to GND through 10 kΩ, do not drive
   with firmware, do not use as an output.
-- **DC and CS must live on PB** so they're captured by the same
-  DMA read as the data-high byte. Any free PB pin works.
+- **DC and CS** on any free pin on either port. Both `GPIOA->IDR`
+  and `GPIOB->IDR` are read every WR edge by parallel DMA channels
+  (Q12), so a captured pin on either port is decodable in software.
 - **Status LED** on any free pin outside the boot-strap pins.
+  Convention: PC13, matching the Blue/Black Pill onboard LED so the
+  same firmware blinks both dev board and PCB.
 
 Pin assignments to fix in routing (flexible):
 
@@ -150,10 +153,9 @@ Pin assignments to fix in routing (flexible):
     in your firmware config). PA0–PA8 + PA11 is the natural 10-
     candidate pool — pick whichever 8 the router likes best.
   - PB-side bits: pick 8 pins from PB0–PB15 excluding PB2 (BOOT1).
-    Most flexible choice is PB8–PB15 (one byte position), but
-    PB0/PB1/PB3–PB7 are equally fine for data bits if the router
-    prefers — the host permute step doesn't care which bit
-    positions within `GPIOB->IDR` we use.
+    Any 8 of the remaining 15 are fine — the host permute step
+    doesn't care which bit positions within `GPIOB->IDR` we use,
+    so high-byte vs low-byte alignment doesn't matter.
 - The logical "DB0..DB15" identity of each pin is **defined by
   the SKiDL net names**, not by physical location. Routing can
   shuffle freely within each port; the host decoder will pick up
@@ -166,8 +168,8 @@ swap freely during routing):
 |------------|-----------------|----------------------------------------|
 | DB-low ×8  | PA0–PA7         | LQFP-48 pins 10–17, one clean edge     |
 | DB-high ×8 | PB8–PB15        | LQFP-48 pins 21–22, 25–28, 45–46       |
-| DC, CS     | PB0, PB1        | could equally be any free PB pair      |
-| LED        | PB5             | any free pin outside boot-strap rails  |
+| DC, CS     | PB0, PB1        | any free pin on either port (Q12)      |
+| LED        | PC13            | matches Blue/Black Pill onboard LED    |
 
 The header [`firmware/src/pio_capture.rs`](../firmware/src/pio_capture.rs)
 shows the prototype's bit-to-pin mapping for the Pico 2 W — it's
@@ -198,14 +200,11 @@ Both primary channels fire on the same WR edge because TIM1's
 overflow simultaneously produces UEV and the CH1 compare-match
 event.
 
-**Channel-5 conflict check:** Ch 5 is also the default mapping
-for `USART1_RX` DMA. We handle this by running USART1 RX in
-interrupt-driven (non-DMA) mode — Embassy supports both, and at
-the ESP32 link's baud rate (115200–1 Mbaud) the CPU can sustain
-the ISR load easily. F103 has an AFIO pin remap for USART1
-(PA9/PA10 → PB6/PB7) but **no DMA remap**, so the conflict can
-only be dodged at the peripheral-usage level, not by re-routing
-the DMA channel.
+**Ch 5 conflict:** Ch 5 is also `USART1_RX`'s default DMA channel,
+and F103 has no DMA remap. Run USART1 RX interrupt-driven instead —
+RX carries only sparse control messages from the ESP32 (the heavy
+direction is STM32→ESP32 streaming captured bursts), so even at
+1 Mbaud the ISR load is negligible.
 
 **Hardware glitch filter free with ETR:** ETR has a built-in
 digital filter (ETF[3:0] in TIM1_SMCR), so we can replicate the
@@ -237,34 +236,17 @@ the counter via circular mode (`CIRC=1`).
   (control bus, mask off in software) into their respective rings.
   CPU is uninvolved per-sample; firmware processes bursts at the
   boundaries detected by an idle-period timer.
-- **Ring buffer sizing:** average burst is ~3,300 words × 2 bytes
-  (data) + ~3,300 × 2 bytes (control) ≈ 13 kB total. **8 kB SRAM
-  is the hard limit** and we also need stack + USART buffers + code
-  state. Strategies (TBD in firmware bring-up):
-    1. Stream out over USART1 to the ESP32 mid-burst rather than
-       buffering the whole burst — possible because USART1 at
-       e.g. 1 Mbaud can sustain ~100 kB/s vs the ~13 kB/s average
-       data rate. Risk: instantaneous burst rate is ~2.6 MB/s; UART
-       must absorb the differential via a smaller ring.
-    2. Compress in firmware (RLE on data, like the RP2350 firmware
-       does for uniform pixel fills) before forwarding.
-    3. Pack control bits — DC and CS are 1 bit each, so a byte per
-       sample halves the control-ring memory. Even better: pack DC
-       into the unused MSB of the 16-bit data sample, since `GPIOA
-       ->IDR` upper bits are zero and we have a free bit. Then DMA
-       reads 16-bit `GPIOA->IDR | (GPIOB << shift)` — but the F030
-       doesn't have hardware bit-merge between ports, so this would
-       need a CPU-side combine, defeating DMA. Stick with separate
-       rings.
-- **Risk to validate in firmware bring-up:** the F030's DMA must
-  sustain 667 kHz × 2 channels of GPIO→SRAM transfers without
-  dropping samples during the burst. At 48 MHz that's one transfer
-  per ~36 CPU cycles across both channels. AHB-Lite is single-master
-  but DMA bursts a single 16-bit read+write in a few cycles, so
-  this should fit — but it's the new front-end risk, replacing
-  RP2350 PIO. The Pico 2 W prototype already required care
-  (filtering glitches, ring-mode DMA); the F030 path needs
-  equivalent attention.
+- **Ring buffer sizing:** average burst is ~3,300 × 2 bytes (data) +
+  ~3,300 × 2 bytes (control) ≈ 13 kB. F103's 20 kB SRAM holds a full
+  burst with room for stack + USART buffers + Embassy executor, so
+  whole-burst buffering is the default; mid-burst USART streaming
+  is available as a fallback if any future use shifts the average
+  burst higher.
+- **DMA throughput risk:** ~667 kHz × 2 channels of half-word
+  GPIO→SRAM transfers. At 72 MHz that's ~108 cycles per transfer pair
+  — comfortable on the F103's bus matrix even with CPU active. Still
+  the new front-end risk vs the RP2350 PIO prototype, so validate
+  with a no-drop-counter check during bring-up.
 
 #### Programming path: SWD + ESP32-driven UART bootloader
 
@@ -302,45 +284,43 @@ RP2350's "single source of truth" property is lost. Mitigations:
   plan which switched from QSPI bootrom UART to PL011 F11 mux).
 - Baud rate negotiable between firmwares; default 115200 or higher.
 
-#### USB recovery — removed
-
-The F103C8T6 *does* have USB device (the F030C8T6 alternative did
-not). For this design we still skip USB on the board:
-
-- The intended runtime data path is ESP32 ↔ STM32 USART, not host
-  USB. The capture board sits inside the target, not on a desk
-  next to a laptop.
-- The SWD + UART-bootloader recovery paths already cover failure
-  modes. Adding USB would add a connector, ESD diodes, two ~22 Ω
-  series resistors, board area, and complicate the chassis
-  cut-out — for marginal benefit.
-- Could be revisited if a future bring-up campaign would benefit
-  from high-bandwidth direct host streaming; the F103's USB
-  peripheral leaves that door open without affecting the current
-  BOM.
-
-Net effect vs the RP2350 plan:
-- Drop USB-C connector + 27 Ω resistors + 0 Ω VBUS jumper.
-- Drop the 4-pin USB-C header.
-- Add a 4-pin SWD header (SWDIO/SWCLK/GND/3V3) instead.
-
 ### Power: tap target 3V3 rail
 
-- Single 3V3 rail powers the whole capture board (RP2350, Xiao C6,
-  level translation if any).
+- Single 3V3 rail powers the whole capture board (STM32 + Xiao C6).
 - Backfed into Xiao C6 3V3 pin, which bypasses its onboard LDO. This
   means the Xiao cannot be powered from its own USB-C while the
   capture PCB is connected to the target.
 - **To reflash the ESP32 standalone:** disconnect the 3V3 pin in the
-  3-wire connector between the capture PCB and the target main board.
-  This isolates both the ESP32 and the RP2350 from the target supply,
-  letting the Xiao run from its own USB-C.
-- Caveat: if USB on the RP2350 is also plugged in with VBUS connected
-  (see Q2), don't have both USB cables live at once unless an OR'ing
-  scheme is built — they'd fight on the 3V3 rail.
+  3-wire connector to the target main board so the Xiao can run from
+  its own USB-C without back-driving the rail.
 - **Risk to validate:** Xiao C6 WiFi TX pulls 200–300 mA peaks. target
   3V3 must source that on top of the display backlight load. Measure
   the target 3V3 headroom before committing.
+- **Fallback if 3V3 headroom is insufficient:** a 2-pin 2.54 mm header
+  (J4, unpopulated by default) lets us feed target 5V into the Xiao
+  USB-C VBUS net, so the Xiao's onboard LDO regenerates 3V3 locally
+  instead of leaning on the target 3V3 rail. Don't have both Xiao
+  USB-C and the J4 tap live at the same time without an OR'ing
+  scheme — they'd fight on the +5V rail.
+
+#### Decoupling
+
+STM32 local decoupling per AN2586 §2.2
+([`reference/STM32F103/an2586_hardware_development.pdf`](../reference/STM32F103/an2586_hardware_development.pdf)):
+
+| Rail              | Caps                                          |
+|-------------------|-----------------------------------------------|
+| VDD (×3 on LQFP-48) | 100 nF per pin + 1× 4.7 µF bulk             |
+| VDDA              | 100 nF + 1 µF                                 |
+| VBAT (no battery) | tied to VDD via 100 nF                        |
+
+VREF+ is not bonded out on the F103C8 LQFP-48 package (DS5319
+Table 5 — only on LFBGA100 / TFBGA64); no external decoupling
+needed.
+
+Plus 22 µF + 100 µF bulk near the Xiao 3V3 pad to absorb WiFi TX
+transients locally rather than burdening the target regulator's
+transient response (see Q6 mitigation).
 
 ### Connection to target main board
 
@@ -357,18 +337,38 @@ Net effect vs the RP2350 plan:
 - Two 39-pin flex connectors, board sits inline (man-in-the-middle):
   most signals pass straight through, capture-relevant signals also
   fan out to STM32 GPIOs.
-- Capture mechanism on STM32: WR drives TIM1_ETR; TIM1 update event
-  triggers DMA from `GPIOA->IDR` (containing DB0–DB15 on PA0–PA15)
-  into an SRAM ring buffer. DC/CS captured separately (PB1, PB2)
-  either via a second DMA channel or by sampling alongside in a
-  16-bit-wide DMA transfer of a remapped GPIO port. To be finalised
-  during firmware bring-up.
+- Capture mechanism on STM32: WR drives TIM1_ETR; per-edge DMA reads
+  of `GPIOA->IDR` and `GPIOB->IDR` into two ring buffers. Data bus,
+  DC, and CS are all captured (DC/CS are on PB pins along with the
+  data-PB byte). See "Capture mechanism" under MCU above for the
+  TIM1 + DMA register details.
 - Reference: the Pico 2 W prototype (RP2350 PIO + DMA) validated the
   display-side decode against live 0x2A/0x2B/0x2C + RGB565 traffic
   from an ILI9488/ST7796-compatible controller — see
   [display_notes.md](display_notes.md). The protocol/decode work
   carries over verbatim; only the capture front-end is being re-done
   for the STM32.
+
+### Flex GND tie
+
+The display flex carries three pins suspected to be GND on the
+target side (J2 pins 1, 18, 19 — labels `GND_1`, `GND_18`, `GND_19`
+in the SKiDL netlist). They are kept as separate nets at the
+schematic level because the target flex pinout is partly guessed
+and shorting two non-GND pins together would be hard to undo.
+
+Each one is tied to board GND through a **dedicated 0402 0 Ω
+jumper** on the top side near the flex connectors. **Populated at
+fab time by default** — matches the "prior project validated the
+target pinout" baseline and skips a per-board hand-solder step.
+
+Bring-up:
+1. Boards arrive with all three 0 Ωs populated.
+2. Before plugging into the target, scope each suspected-GND pin
+   against board GND while the target is alone-powered, confirming
+   it's at 0 V.
+3. If any pin shows a non-zero signal, depopulate that 0 Ω with
+   hot air.
 
 ### Status LED
 
@@ -382,13 +382,8 @@ Net effect vs the RP2350 plan:
 
 ### Bring-up test points
 
-- **2× hardware USART2 test points** on STM32 **PA2 (TX) / PA3 (RX)**
-  — secondary serial for ESP32 ↔ STM32 comms bodging if the primary
-  USART1 path (PA9/PA10, shared with the ROM bootloader) turns out
-  to have an issue, or for an attached serial console during bring-up.
-- **Additional general-purpose test points** on free STM32 GPIOs (TBD
-  in layout — likely PB3, PB4, PB5 since they're contiguous with PB0–
-  PB2 already in use for WR/DC/CS).
+- **General-purpose test points** on free STM32 GPIOs PB3, PB4, PB5
+  (contiguous with PB0–PB2 already in use for DC/CS/BOOT1).
 - All exposed as small SMD pads at the board edge; no headers needed.
 
 ## ESP32-C6 (Xiao) resources
@@ -448,7 +443,7 @@ Within each port, route whatever pin order is convenient.
 |--------------------------------|--------------------------------------------|
 | Data bus PA-half (8 bits)      | 8 pins chosen from PA0–PA8, PA11, PA15. PA15 needs JTAG-disabled. |
 | Data bus PB-half (8 bits)      | 8 pins chosen from PB0–PB15 except PB2 (BOOT1). |
-| DC, CS                         | Any 2 free PB pins (must be on PB so they're captured by the same DMA read as the data-PB byte). |
+| DC, CS                         | Any 2 free pins on either port — both `GPIOA->IDR` and `GPIOB->IDR` are read every WR edge by parallel DMA channels. |
 | Status LED                     | Any free pin outside the boot-strap rails. |
 
 Free pool after a typical 16-bit data + DC/CS + LED allocation:
@@ -457,86 +452,63 @@ likewise), PB4 (NJTRST — likewise), PB6, PB7 (or whichever PB pair
 isn't taken by DC/CS), PD0/PD1 (OSC; usable as GPIO when no
 crystal is fitted). Plenty of test-point and future-bodge headroom.
 
-### Suggested starting allocation (used for area estimation in Q8)
-
-| Logical signal | Physical pin (suggested) | LQFP-48 # |
-|----------------|--------------------------|-----------|
-| DB-PA byte (8 bits) | PA0–PA7             | 10–17     |
-| DB-PB byte (8 bits) | PB8–PB15            | 45–46, 21–22, 25–28 |
-| DC, CS         | PB0, PB1                 | 18, 19    |
-| LED            | PB5                      | 41        |
-
-The PA byte sits on a clean physical edge; the PB byte scatters
-across two opposite sides of the package — see Q13 for routing
-implications and Q17 for the host-side permutation table.
-
 ## Open questions
 
 These need answers before schematic. Tackle them in roughly this order;
 items earlier in the list block later ones.
 
-### Q3. STM32 GPIO assignment for display capture — RESOLVED (rule-based)
+### target. JLCPCB BOM cost review — every part, not just the flex
 
-Pin allocation now lives as a set of rules + a flexible pool, not
-a fixed assignment — see "Pin allocation (rules, not a fixed map)"
-above and the pin-budget tables. Routing decides the within-port
-ordering; the host decoder applies a permutation (Q17).
+Originally just about the flex connector, but JLCPCB shuffles parts
+between basic and extended libraries frequently and "extended" adds
+both a per-part assembly fee and a reel cost. Worth a sweep over
+the whole BOM before submission. Goal: every active part either in
+basic, or consciously accepted as extended.
 
-Hard constraints recap:
+Method: for each part below, look up the current JLCPCB part number
+(search the value + footprint on jlcpcb.com/parts), note basic vs
+extended, and pick a basic-library substitute where one exists with
+a compatible footprint. **Footprint compatibility matters more than
+exact part number** — if a cheaper part has the same pad layout
+(pitch, lead-out direction, height) we can swap parts without
+redesigning.
 
-- PA12 = WR (TIM1_ETR, no remap on F103).
-- PA9/PA10 = USART1 (permanent, no DMA remap available).
-- PA13/PA14 = SWDIO/SWCLK.
-- PB2 = BOOT1 latch (pull-down only, never as I/O).
-- DC and CS must live on a PB pin (so they're captured by the
-  same DMA read as the data-PB byte).
+Current BOM (parts that could move between basic and extended):
 
-### Q9. Ground pour underneath the flex pass-through?
+| Part / value | Qty | Footprint | Concern |
+|---|---|---|---|
+| FH26W flex 39p 0.3 mm | 2 | custom | Originally extended-or-missing; check current status and Molex 502598 / JST equivalents |
+| STM32F103C8T6 | 1 | LQFP-48 | Basic last we checked; reconfirm |
+| 100 nF X7R | 7 | 0402 | Should be basic; verify |
+| 1 µF / 4.7 µF | 1+1 | 0402 | Basic for X5R/X7R at 6.3 V+; verify the exact rating |
+| 22 µF | 1 | 0805 | Likely basic at low voltage |
+| 100 µF | 1 | 1206 | Often extended in low-ESR variants; check basic alternatives or drop to 47 µF |
+| 1 kΩ / 10 kΩ resistors | 1+2 | 0402 | Should be basic |
+| Status LED | 1 | 0603 | **User-flagged: currently expensive.** Find a basic-library 0603 LED in any colour — colour doesn't matter, footprint does |
+| 1×3 pin header 2.54 mm | 2 | through-hole | Through-hole; JLC PCBA only assembles SMD by default — these are hand-soldered, so library status doesn't matter |
+| Xiao ESP32-C6 (module) | 1 | castellated | Module is hand-soldered, not assembled by JLC; library status N/A |
+| 0 Ω jumpers (Q18, Q19, possibly Q20) | TBD | 0402 | Basic; cheapest possible part — go for whichever is in stock |
 
-The bottom-side GND pour is interrupted directly under the flex
-pass-through traces between J1 and J2 if we route them on the top layer
-without via-stitching across. Question:
+Plus the upcoming additions from open questions:
+- Q18: 3× 0402 0 Ω for flex GND ties
+- Q19: 2× 0402 0 Ω for UART break jumpers
+- Q20: 1× 2-pin 2.54 mm header (through-hole, hand-soldered)
+- Q21: TBD passives for the PIC32 reset hold-low circuit (R + C + N-FET, all 0402-class if possible)
 
-- Does the 16-bit data bus + 8080 control signals need a continuous
-  GND reference plane underneath for signal integrity at the (modest)
-  display write-strobe speed?
-- Or is it fine to break the pour, since the parallel display protocol
-  is single-ended and slow?
-
-Probably fine to break the pour given the slow signals, but worth
-checking once we have a real placement to see how much pour we'd
-actually be cutting.
-
-### target. JLCPCB-friendly flex connector sourcing
-
-Currently using `FH26W:FH26W39S03SHW60` (Hirose FH26W, 39-pin 0.3 mm
-pitch). Need to check:
-
-- Is this part in JLCPCB's basic library? If not, what's the
-  extended-library availability and price?
-- Are there cheaper drop-in alternatives in JLCPCB basic that take
-  the same flex (39-pin, 0.3 mm pitch, dual contact)? Common
-  alternatives: Molex 502598-3990 / 502598 series, JST 39FMN-BMT,
-  generic AliExpress equivalents.
-- Footprint compatibility matters more than exact part number — if a
-  cheaper part has the same pad layout (same pitch, same lead-out
-  direction, same height), we can swap parts without redesigning.
-
-### Q11. Inductor polarity — OBSOLETE
-
-Was about the RP2350 SMPS inductor (AOTA-B201610S3R3-101-T). The
-STM32F030 doesn't have an internal SMPS, so there's no external
-inductor to polarise. Question dropped.
+Output: before BOM submission, fill a column with the JLCPCB part
+number + basic/extended status + unit price for every row. If the
+total extended-parts surcharge exceeds ~$5–10 per assembly run,
+revisit the choices.
 
 ### Q6. target 3V3 headroom
 
 Need to confirm there's at least ~400 mA spare on the target 3V3 rail
-for Xiao C6 WiFi peaks + STM32 (~30 mA active at 48 MHz, much less
-than the RP2350's ~50 mA) without browning out the display or the
-PIC32.
+for Xiao C6 WiFi peaks + STM32 (~30 mA active at 72 MHz) without
+browning out the display or the PIC32.
 
-Blocking risk: if there's not enough headroom, need a separate power
-input (USB barrel jack, or 5V tap if available on the main board).
+Blocking risk: if there's not enough headroom, fall back to the
+5V tap header (J4) and let the Xiao's onboard LDO regenerate 3V3
+locally — see "Power: tap target 3V3 rail" → "Fallback".
 
 **Validation procedure** (do in this order, stop when confident):
 
@@ -570,27 +542,6 @@ than burdening the target regulator's transient response. The Xiao
 module has its own onboard decoupling sized for normal USB-powered
 operation, but when 3V3 is backfed externally that decoupling is
 upstream of our tap point and we shouldn't rely on it alone.
-
-### Q7. Decoupling and reference layout
-
-Two distinct concerns — don't conflate them:
-
-**(a) Bulk caps for WiFi TX transients** — covered in Q6's mitigation
-above. 22 µF + 100 µF near the Xiao 3V3 pin.
-
-**(b) STM32 local decoupling** — needed independently. F103
-recommended decoupling per AN2586 §2.2
-([`reference/STM32F103/an2586_hardware_development.pdf`](../reference/STM32F103/an2586_hardware_development.pdf)):
-
-| Rail              | Caps                                          |
-|-------------------|-----------------------------------------------|
-| VDD (×2 on LQFP-48) | 100 nF per pin + 1× 4.7–10 µF bulk          |
-| VDDA              | 100 nF + 1 µF                                 |
-| VBAT (if no battery) | tied to VDD via 100 nF                     |
-
-VREF+ is **not bonded out** on the F103C8 LQFP-48 package
-(DS5319 Figure 8 / Table 5 — VREF+ only on LFBGA100 / TFBGA64);
-no external decoupling needed.
 
 ### Q7b. STM32F103 design-guide compliance — RESOLVED
 
@@ -634,120 +585,6 @@ and RM0008 in
   current map, but if we later need PA15/PB3/PB4 as plain GPIO
   inputs/outputs the JTAG-disable step is mandatory.
 
-### Q8. Mechanical / form factor
-
-- **Target board size: as small as possible**, ideally close to the
-  Xiao C6 footprint (21 × 17.5 mm). The Xiao is mounted on the back
-  side of the PCB to leave the front clear for the STM32 and flex
-  connectors.
-- **Realistic minimum with LQFP-48 STM32: ~25 × 27 mm.** The STM32
-  body is 7 × 7 mm and the LQFP-48 footprint with leads is ~9 × 9 mm,
-  larger than the 7 × 7 mm QFN-60 footprint of the RP2350. The flex
-  connectors are 0.3 mm pitch, 39-pin (Hirose FH52 / Molex 502598
-  class), ~14–15 mm × 3–4 mm each. Net: ~3 mm wider and ~2 mm
-  taller than the RP2350 design.
-- **Layer stack: 4 layers preferred** (sig / GND / 3V3 / sig).
-  Reasoning unchanged from the RP2350 version: 39 flex signals per
-  connector, ~16+3 tap to STM32, GND reference plane simplifies
-  return paths. JLCPCB 4-layer is ~$5 for 5 boards vs ~$2 for
-  2-layer.
-
-  **2-layer is feasible** (no USB to worry about now, which slightly
-  loosens the constraint) with the same discipline as before:
-    - Bottom layer near-continuous GND pour, no signal routing under
-      the STM32 or in the flex fanout area.
-    - All decoupling caps on bottom layer, short via to chip pin.
-    - Two flex connectors arranged so most pass-through traces run
-      straight across the top without bottom-layer crossings.
-- **Open:** mounting holes — does the board need to fit a specific
-  spot inside the target enclosure, or is it free-floating with the
-  flex cables and target 3-pin connector doing the mechanical work?
-- **Open:** flex connector orientation (top vs bottom entry) — affects
-  how the board sits relative to the display and main board, and
-  whether the flex cables fold or run straight.
-
-### Q12. DMA channel mapping for parallel-bus capture — RESOLVED
-
-**Architectural plan** (works on both F030 and F103, originally
-verified against RM0360 §10.3.2 / Table 26 / §13.3.7 / §13.4.4
-during the F030 draft):
-
-- TIM1 in external clock mode 2 (ECE=1), ETR = WR, ARR = 0.
-- Each ETR edge generates UEV + CC1 match (+ CC3 match on F103,
-  see below) simultaneously.
-- DIER enables UDE, CC1DE, CC3DE independently — multiple DMA
-  requests fired per WR edge.
-- ETR has an in-built digital filter (ETF[3:0]) replacing the
-  RP2350 PIO's software glitch-reconfirm. Set ETF to 2–4 samples
-  at fDTS to reject ringing on the falling edge.
-
-**F103 DMA channel mapping** verified against RM0008 Table 78
-([`reference/STM32F103/rm0008.pdf`](../reference/STM32F103/rm0008.pdf)):
-
-| TIM1 event  | DMA1 channel | Notes                              |
-|-------------|--------------|-------------------------------------|
-| TIM1_CH1    | Ch 2         | reads `GPIOA->IDR` → data-low ring  |
-| TIM1_UP     | Ch 5         | reads `GPIOB->IDR` → data-high+ctrl ring |
-| TIM1_CH3    | Ch 6         | optional: counter snapshot ring     |
-| TIM1_CH4 / TRIG / COM | Ch 4 | (unused)                       |
-
-**Important: TIM1_CH2 has no DMA request on F103.** This differs
-from F030 (where TIM1_CH2 → Ch3). The architectural plan therefore
-uses TIM1_CH1 + TIM1_UP as the two capture-channel triggers
-(verified F103-style), and TIM1_CH3 as the optional third.
-
-**Channel-5 USART1 conflict:** Ch5 is also the default DMA target
-for `USART1_RX`. Resolution: run USART1 RX interrupt-driven (no
-DMA) — at the ESP32 link rates (115200 to 1 Mbaud) the CPU keeps
-up trivially. F103 has an AFIO USART1 pin remap (PA9/PA10 →
-PB6/PB7) but **not** a DMA remap, so DMA conflicts can only be
-resolved at the peripheral usage level.
-
-**Firmware impact:** the capture front-end is register-level
-configuration; Embassy's high-level timer API likely won't expose
-every knob, so plan on PAC-level setup for TIM1 and DMA. The
-application code is small (one task to drain the ring, one to
-flush bursts to USART1).
-
-### Q13. Flex-fanout layout — mostly absorbed by routing flexibility
-
-PB pins are scattered across the LQFP-48 (PB0–PB2 at pins 18–20,
-PB10–PB15 at 21–28, PB3–PB7 at 39–43, PB8–PB9 at 45–46). PA0–PA7
-are clustered on pins 10–17. The host-side permutation table
-(see Q17) means routing is free to pick whichever 8 PB pins it
-likes for the data-PB byte and whichever 8 PA pins for the data-PA
-byte — there's no "DB8–DB15 must be on PB8–PB15" constraint.
-
-Remaining considerations for the router:
-
-- Display flex connector ideally sits along the long PA edge
-  (pins 10–17) and the adjacent PB stretch (pins 18–28). DB
-  bits on the far side (PB3–PB9 at pins 39–46) require
-  longer fanout traces.
-- Is the fanout routable on 2 layers, given the GND-pour-under-
-  flex concern in Q9? On 4 layers it's straightforward; on 2
-  layers the awkward pins (whichever end up on the far side of
-  the chip) will need careful routing or a bottom-layer trip
-  with via stitching.
-- Routing can pick *which* PA/PB pins carry data-bus bits, but
-  cannot move bits between PA and PB without changing the host
-  permutation logic from "two simple `IDR` reads → permute" to
-  "two `IDR` reads with cross-port bit-merge → permute" — still
-  workable on the host, but ugly. Keep all 8 PA-side DB bits on
-  PA and all 8 PB-side DB bits on PB.
-
-### Q14. Bring-up serial — RESOLVED via SWO
-
-USART2 alternates land on PA2/PA3. In the suggested allocation
-PA2/PA3 carry data-bus bits, so claiming them for USART2 would
-either steal two data bits or constrain the router. Routing has
-the option to leave PA2/PA3 out of the data bus and reserve them
-for USART2 instead, but it costs flexibility.
-
-Lean toward **SWO via the SWD probe** — no extra pin cost, no
-fab-time options. ST-Link supports SWO output during normal SWD
-debugging. Embassy can configure ITM/SWO trivially.
-
 ### Q15. Embassy STM32F1 support — likely fine, verify before firmware port
 
 The current firmware uses `embassy-rp` heavily. STM32F1 support in
@@ -774,21 +611,12 @@ briefly targeted) easily fits an Embassy executor + DMA rings +
 USART buffers. This was the main bring-up risk on the F030 draft
 and is now de-risked.
 
-### Q16. RM0360 — RESOLVED
-
-Downloaded by user to
-[`reference/STM32F030/rm0360.pdf`](../reference/STM32F030/rm0360.pdf).
-Key sections consulted for Q12: §10.3.2 (DMA request routing),
-Table 26 (channel/peripheral matrix), §13.3.7 + Figure 69 (TIM1
-external clock mode 2 / ETR filter), §13.4.4 (DIER bits CC1DE,
-CC2DE, UDE).
-
 ### Q17. Host-side bit-permutation table — to populate after routing
 
 The PCB router is free to assign any PA pin to any data-PA bit
-and any PB pin to any data-PB bit (subject to the constraints in
-Q3). The firmware streams raw `GPIOA->IDR` and `GPIOB->IDR`
-samples; the host decoder
+and any PB pin to any data-PB bit (subject to the hard constraints
+in "Pin allocation" above). The firmware streams raw `GPIOA->IDR`
+and `GPIOB->IDR` samples; the host decoder
 ([`firmware/src/decoder.rs`](../firmware/src/decoder.rs)) needs
 a static table mapping (port, physical bit) → logical DB bit so
 that captured samples can be interpreted regardless of routing.
@@ -832,6 +660,66 @@ SKiDL netlist so it can't drift from the schematic — emit it
 during the netlist regeneration step. A small Python helper in
 `pcb/` can read the netlist and write a Rust source file the
 decoder includes via `include!()`.
+
+### Q21. PIC32 reset — move to STM32 + power-on hold-low — TODO
+
+Two related changes to the PIC32 MCLR (currently `PIC32_RESET`, open-
+drain from ESP32 GPIO20):
+
+**(a) Move control from ESP32 to STM32.** The STM32 has spare GPIOs
+and is the deterministic, low-latency side of the board (no WiFi
+stack to compete with). It's also the side that knows when capture
+DMA is armed, so it can hold the target in reset until it's actually
+ready to record. Route MCLR to a free STM32 GPIO (PB6 or PB7 are
+obvious candidates — adjacent, both free, on the same side of the
+package as the rest of the PB cluster). Drive it the same way as
+today: open-drain, **never drive high**.
+
+**(b) Power-on hold-low.** On board power-on, MCLR should be held
+asserted (= low, **double-check polarity against the PIC32 part
+on the target main board before fab**) until the STM32 firmware is
+running and has explicitly released it. Otherwise the target starts
+running while our capture chain is still in reset, and we miss the
+boot-time display traffic.
+
+Simple implementation: an RC delay + small N-MOSFET (or open-drain
+buffer) pulling MCLR low, driven by the STM32's GPIO once firmware
+boots. Or even simpler: rely on the fact that the STM32 GPIO is
+high-Z at reset → MCLR pulled high by the target's own pull-up →
+target runs. That's the *opposite* of what we want; we want the
+default to be "target held in reset until we say go".
+
+Sketches to evaluate:
+1. **RC + transistor.** R from 3V3 to GND through a cap; gate of an
+   N-FET sees the cap voltage. On power-up the cap is empty → FET
+   on → MCLR pulled low. Cap charges through R; FET turns off after
+   ~τ. Meanwhile STM32 firmware boots and either takes over with
+   its own GPIO pulling MCLR low (keeps it asserted) or releases
+   (lets it go high). Tunable: R·C ≥ STM32 boot-to-take-control
+   time, with margin.
+2. **Diode-OR'd reset lines.** STM32 GPIO and a power-on-reset chip
+   (TPS3823 or similar) both pull MCLR open-drain. Either one
+   asserted → MCLR low. POR chip handles the cold-boot window;
+   STM32 takes over thereafter. Cleaner electrically, more BOM.
+3. **Default-asserted-via-STM32-NRST-chain.** Tie MCLR to STM32
+   NRST via an open-drain buffer so STM32-in-reset = MCLR low.
+   Cheapest, but couples the two reset domains — if the STM32
+   crashes and reboots, the target reboots with it.
+
+**Pick sketch #1 (RC + transistor) unless something rules it out** —
+it's smallest, has the right default behaviour, and the timing is
+robust because the STM32 takes over before the cap finishes
+charging (so the exact RC value isn't load-bearing).
+
+⚠ **Polarity double-check** before BOM: PIC32 MCLR is conventionally
+active-low (asserted = low). Confirm against the specific PIC32
+part on the target main board — prior-project note says "open-drain
+with pull-up on the main board" which is consistent with active-low,
+but worth re-verifying with a scope during bring-up.
+
+ESP32-side impact: GPIO20 is freed up by this move and becomes a
+spare GPIO on the Xiao header. Update the pin budget table once the
+move is committed.
 
 ## References
 

@@ -67,8 +67,9 @@ lib_search_paths[KICAD9].append(os.path.dirname(os.path.abspath(__file__)))
 # =============================================================================
 GND = Net("GND")
 P3V3 = Net("+3V3")
-P5V = Net("+5V")        # Xiao USB-C VBUS (when running standalone). No
-                        # target 5V tap; target-powered operation uses 3V3.
+P5V = Net("+5V")        # Xiao USB-C VBUS *and* the optional target 5V
+                        # tap header (J4). Don't have both live at the
+                        # same time without an OR'ing scheme.
 
 
 # =============================================================================
@@ -152,6 +153,22 @@ for i in range(1, 40):
     n += J2[i], J1[40 - i]
     flex_nets[label] = n
 
+# Tie each suspected-GND flex pin to board GND through a dedicated
+# 0402 0 Ω jumper. One jumper per logical pin grounds both flex
+# terminals because they share the pass-through net.
+# Populated by default; depopulate with hot air if scope-check shows
+# the pin isn't actually GND on the target side. See pcb_spec.md
+# "Flex GND tie".
+GND_TIE_REFS = [
+    ("GND_1",  "R10"),
+    ("GND_18", "R11"),
+    ("GND_19", "R12"),
+]
+for net_label, ref in GND_TIE_REFS:
+    r = R("0", ref, f"R_FLEX_{net_label}_TIE")
+    r[1] += flex_nets[net_label]
+    r[2] += GND
+
 
 # =============================================================================
 # 3-pin power connector to target main board
@@ -165,6 +182,22 @@ PIC32_RESET = Net("PIC32_RESET")   # open-drain from ESP32 (see ESP32 section)
 J3[1] += P3V3
 J3[2] += GND
 J3[3] += PIC32_RESET
+
+
+# =============================================================================
+# Optional target 5V tap header (J4)
+# =============================================================================
+# 2-pin 2.54 mm header wired to GND + the +5V net (Xiao USB-C VBUS).
+# Unpopulated by default; only soldered when the target 3V3 tap
+# (Q6) turns out not to have enough headroom for Xiao WiFi peaks
+# and we need to fall back to powering the Xiao through its onboard
+# LDO from the target's 5V rail instead. See pcb_spec.md "Power".
+J4 = Part("Connector", "Conn_01x02_Socket",
+          footprint="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+          ref="J4",
+          tag="J4_AIRRUN_5V_TAP")
+J4[1] += P5V
+J4[2] += GND
 
 
 # =============================================================================
@@ -255,10 +288,23 @@ J5[3] += SWDIO
 # --- USART1 (PA9 TX / PA10 RX): ESP32 ↔ STM32 link --------------------
 # Same pins for the ROM bootloader (AN2606 — no PB6/PB7 remap scan) and
 # for the runtime data link. Never multiplexed with data-bus capture.
-UART_STM_TX = Net("UART_STM_TX")    # STM32 TX (PA9) -> ESP32 RX
-UART_STM_RX = Net("UART_STM_RX")    # STM32 RX (PA10) <- ESP32 TX
-U1[30] += UART_STM_TX               # PA9
-U1[31] += UART_STM_RX               # PA10
+#
+# Each line is split into STM32-side and ESP32-side halves by a series
+# 0 Ω jumper, so the link can be broken during bring-up to drive either
+# side from an external USB-UART probe without the other side pulling
+# on the line. Place the jumpers near the STM32 (short stubs on the
+# probe-friendly ESP32 side).
+UART_STM_TX = Net("UART_STM_TX")        # STM32 TX (PA9) -> jumper -> ESP32 RX
+UART_STM_RX = Net("UART_STM_RX")        # STM32 RX (PA10) <- jumper <- ESP32 TX
+UART_ESP_RX = Net("UART_ESP_RX")        # ESP32-side of TX line
+UART_ESP_TX = Net("UART_ESP_TX")        # ESP32-side of RX line
+U1[30] += UART_STM_TX                   # PA9
+U1[31] += UART_STM_RX                   # PA10
+
+R_UART_TX = R("0", "R13", "R_UART_TX_BREAK")
+R_UART_TX[1] += UART_STM_TX; R_UART_TX[2] += UART_ESP_RX
+R_UART_RX = R("0", "R14", "R_UART_RX_BREAK")
+R_UART_RX[1] += UART_STM_RX; R_UART_RX[2] += UART_ESP_TX
 
 
 # =============================================================================
@@ -337,40 +383,26 @@ U1[2] += LED_STATUS
 
 # =============================================================================
 # Bring-up test points on STM32 free pins
-# =============================================================================
-# USART2 alternates land on PA2/PA3 — but those are DB2/DB3 in the
-# capture map. So the test points here are not "USART2 console";
-# they're a secondary serial bodging option per pcb_spec.md "Bring-up
-# test points". Lift DB2/DB3 from the flex if you actually want to use
-# USART2; default builds keep them as data bits.
-#
 # PB3, PB4, PB5 are free GPIOs intended as scope-probe points during
 # bring-up. Note: on F103 PB3/PB4 default to JTAG (PB3=JTDO,
 # PB4=NJTRST); firmware must write `AFIO_MAPR.SWJ_CFG=010` early to
 # disable JTAG-DP and free them as plain GPIO (we use SWD only, not
 # JTAG). PB5 has no AF default to worry about.
+# Bring-up serial console uses SWO via the SWD probe (Q14), not a
+# dedicated UART pad cluster.
 TEST_POINTS = [
-    (12, "TP1", "TP_PA2_USART2_TX"),   # PA2 — shared with DB2
-    (13, "TP2", "TP_PA3_USART2_RX"),   # PA3 — shared with DB3
-    (39, "TP3", "TP_PB3"),             # JTDO — needs JTAG disabled
-    (40, "TP4", "TP_PB4"),             # NJTRST — needs JTAG disabled
-    (41, "TP5", "TP_PB5"),
+    (39, "TP1", "TP_PB3"),   # JTDO — needs JTAG disabled
+    (40, "TP2", "TP_PB4"),   # NJTRST — needs JTAG disabled
+    (41, "TP3", "TP_PB5"),
 ]
 for pad_num, ref, tag in TEST_POINTS:
     tp = Part("Connector", "TestPoint",
               footprint="test_points:TestPoint_Pad_0.5x0.5mm",
               ref=ref,
               tag=tag)
-    # PA2/PA3 are already on the DB2/DB3 capture nets; PB3–PB5 are
-    # otherwise unconnected so the test point itself names the net.
-    if pad_num == 12:
-        tp[1] += flex_nets["DB2"]
-    elif pad_num == 13:
-        tp[1] += flex_nets["DB3"]
-    else:
-        net = Net(tag.replace("TP_", ""))
-        U1[pad_num] += net
-        tp[1] += net
+    net = Net(tag.replace("TP_", ""))
+    U1[pad_num] += net
+    tp[1] += net
 
 
 # =============================================================================
@@ -407,8 +439,8 @@ U2[13] += GND
 U2[14] += P5V
 
 # USART1 to STM32 (ROM bootloader + runtime; up to 115200+)
-U2[7] += UART_STM_RX    # ESP32 TX -> STM32 RX (PA10)
-U2[8] += UART_STM_TX    # ESP32 RX <- STM32 TX (PA9)
+U2[7] += UART_ESP_TX    # ESP32 TX -> 0 Ω -> STM32 RX (PA10)
+U2[8] += UART_ESP_RX    # ESP32 RX <- 0 Ω <- STM32 TX (PA9)
 
 # Reset / boot control
 U2[9]  += NRST          # GPIO19 — open-drain (NRST has internal pull-up)
