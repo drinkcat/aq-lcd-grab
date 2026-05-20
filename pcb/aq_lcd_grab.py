@@ -11,8 +11,10 @@ Scope:
     USART1.
   - 3-pin connector to the target main board for 3V3 tap + PIC32 reset.
   - SWD header on the STM32 for bring-up / fallback flashing.
-  - Status LED on STM32 PB5 (PB2 is the F103 BOOT1 latch and must stay
-    pulled low) plus USART2 + spare-GPIO bring-up pads.
+  - Status LED on STM32 PC13 (matches the Blue/Black Pill dev-board
+    pinout so the same firmware blinks both; PB2 was the F030 draft
+    choice but PB2 is the F103 BOOT1 latch and must stay pulled low)
+    plus USART2 + spare-GPIO bring-up pads.
 
 Connectors:
   - J1: main-board side flex   (cable to the target PIC32 motherboard)
@@ -311,11 +313,15 @@ for pad, label in CAPTURE_TAP:
 
 
 # =============================================================================
-# Status LED on STM32 PB5 (pin 41)
+# Status LED on STM32 PC13 (pin 2)
 # =============================================================================
-# PB5 is free of boot-strap meaning (unlike PB2 = BOOT1, see above).
-# Anode -> 1 kΩ -> 3V3, cathode -> GPIO (active-low drive). GPIO sinks
-# current; LED is off until firmware drives PB5 low.
+# Matches the Blue/Black Pill dev-board pinout: same pin, same anode→
+# 1 kΩ→3V3 / cathode→GPIO active-low topology. So a firmware blink on
+# PC13 lights both the dev-board LED and ours, no per-target #ifdef.
+#
+# PC13 is in the F103 backup domain (low-drive, 3 mA max sink/source,
+# 2 MHz toggle, not 5V tolerant per DS5319). All within spec for a
+# <2 mA LED at sub-Hz rates.
 LED_STATUS = Net("LED_STATUS")
 R_LED = R("1k", "R3", "R_LED_STATUS")
 D_LED = Part("Device", "LED",
@@ -325,8 +331,8 @@ D_LED = Part("Device", "LED",
              tag="D1_LED_STATUS")
 R_LED[1] += P3V3
 R_LED[2] += D_LED[1]      # anode
-D_LED[2] += LED_STATUS    # cathode -> PB5
-U1[41] += LED_STATUS
+D_LED[2] += LED_STATUS    # cathode -> PC13
+U1[2] += LED_STATUS
 
 
 # =============================================================================
@@ -338,15 +344,17 @@ U1[41] += LED_STATUS
 # test points". Lift DB2/DB3 from the flex if you actually want to use
 # USART2; default builds keep them as data bits.
 #
-# PB3, PB4 are free GPIOs intended as scope-probe points during
-# bring-up. Note: on F103 these default to JTAG (PB3=JTDO, PB4=NJTRST);
-# firmware must write `AFIO_MAPR.SWJ_CFG=010` early to disable JTAG-DP
-# and free them as plain GPIO (we use SWD only, not JTAG).
+# PB3, PB4, PB5 are free GPIOs intended as scope-probe points during
+# bring-up. Note: on F103 PB3/PB4 default to JTAG (PB3=JTDO,
+# PB4=NJTRST); firmware must write `AFIO_MAPR.SWJ_CFG=010` early to
+# disable JTAG-DP and free them as plain GPIO (we use SWD only, not
+# JTAG). PB5 has no AF default to worry about.
 TEST_POINTS = [
     (12, "TP1", "TP_PA2_USART2_TX"),   # PA2 — shared with DB2
     (13, "TP2", "TP_PA3_USART2_RX"),   # PA3 — shared with DB3
     (39, "TP3", "TP_PB3"),             # JTDO — needs JTAG disabled
     (40, "TP4", "TP_PB4"),             # NJTRST — needs JTAG disabled
+    (41, "TP5", "TP_PB5"),
 ]
 for pad_num, ref, tag in TEST_POINTS:
     tp = Part("Connector", "TestPoint",
