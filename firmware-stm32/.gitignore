@@ -1,0 +1,9 @@
+# Build artifacts
+/target
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

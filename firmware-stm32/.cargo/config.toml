@@ -1,0 +1,12 @@
+[build]
+target = "thumbv7m-none-eabi"
+
+[target.thumbv7m-none-eabi]
+rustflags = [
+    "-C", "link-arg=--nmagic",
+    "-C", "link-arg=-Tlink.x",
+]
+
+# `cargo run` flashes via stm32flash on USART1 (PA9/PA10).
+# Override the port with STM32FLASH_PORT or edit scripts/flash-uart.sh.
+runner = "./scripts/flash-uart.sh"
