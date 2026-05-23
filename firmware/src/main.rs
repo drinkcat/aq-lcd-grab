@@ -1,29 +1,28 @@
 #![no_std]
 #![no_main]
 
-mod decoder;
 mod picotool_reset;
 mod pio_capture;
-mod proto;
+mod wire;
 
 use embassy_executor::Spawner;
-use embassy_futures::join::join3;
+use embassy_futures::join::{join, join3};
 use embassy_rp::bind_interrupts;
 use embassy_rp::dma;
 use embassy_rp::peripherals::{DMA_CH0, PIO0, USB};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_rp::usb::{Driver, InterruptHandler as UsbInterruptHandler};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::channel::{Channel, Sender};
+use embassy_sync::channel::Channel;
+use embassy_sync::pipe::Pipe;
 use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
-use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
 use panic_halt as _;
 
-use decoder::{Decoder, Sample as DecSample, Transaction};
 use picotool_reset::PicotoolHandler;
 use pio_capture::{CapturePins, RingCapture, Sample as RawSample};
+use wire::{Encoder, HOST_CMD_LOG_TEST, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP, Sink};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => UsbInterruptHandler<USB>;
@@ -34,33 +33,132 @@ bind_interrupts!(struct Irqs {
 #[unsafe(link_section = ".bi_entries")]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"aq-lcd-grab capture PoC"),
+    embassy_rp::binary_info::rp_program_name!(c"aq-lcd-grab capture"),
     embassy_rp::binary_info::rp_program_description!(
-        c"PIO+DMA capture of 8080 bus -> binary CDC stream"
+        c"PIO+DMA capture of 8080 bus -> tagged wire stream (see docs/wire_protocol.md)"
     ),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
 
-// Ring buffer: power-of-2 sample count, byte-size also power-of-2,
-// aligned to its size in bytes. 8192 samples × 4 B = 32768 B
-// (ring_size=15, which is the RP2350 maximum). Each pixel of an 8080
-// bus transfer is one sample, so this buys ~8K samples (~50 ms at 200
-// kHz bus rate, or ~400 µs at 20 MHz) of slack while USB CDC drains.
+// PIO ring: 8192 samples × 4 B = 32 KiB (RP2350 max ring_size=15). At
+// 200 kHz the ring buys ~40 ms of headroom, easily enough to ride out
+// USB stalls.
 const RING_LEN: usize = 8192;
 #[repr(align(32768))]
 struct RingBuf([RawSample; RING_LEN]);
 static mut RING_BUF: RingBuf = RingBuf([0; RING_LEN]);
 
-/// Sample chunk size we drain per loop iteration. Decode + send happens
-/// in tight bursts of this many samples.
+/// Samples we pull off the PIO ring per polling tick. Smaller =
+/// tighter latency, larger = less per-tick overhead. 1024 matches the
+/// STM32 build's drain chunk.
 const DRAIN_CHUNK: usize = 1024;
 
-/// Channel from the capture task to the USB sender.
-type TxChannel = Channel<ThreadModeRawMutex, Transaction, 32>;
-type TxTx<'a> = Sender<'a, ThreadModeRawMutex, Transaction, 32>;
+/// Outbound byte pipe (encoder → USB sender). 4 KiB holds ~60 ms at
+/// USB-FS bulk burst rate (≈ 64 kB/s) and ~10 KB worth of typical
+/// target bus traffic — plenty to bridge a USB stall.
+///
+/// We use a byte-oriented `Pipe` rather than a `Channel<u8>` because the
+/// USB sender needs bulk reads to fill 64-byte packets; pulling one byte
+/// per `try_receive` capped throughput at ~15 kB/s (1 packet per USB
+/// frame, mostly short).
+const TX_PIPE_CAP: usize = 4096;
+static TX_PIPE: Pipe<ThreadModeRawMutex, TX_PIPE_CAP> = Pipe::new();
 
-static TX_CHANNEL: TxChannel = Channel::new();
+/// Commands from the RX task to the capture task. The protocol mandates
+/// an ack for every START/STOP — even when the command is a no-op for
+/// the current state — so we send each command through a FIFO instead
+/// of a one-slot Signal. 8 slots is plenty: a host won't issue commands
+/// fast enough to outrun a polling tick.
+type CmdQueue = Channel<ThreadModeRawMutex, HostCmd, 8>;
+static CMD_QUEUE: CmdQueue = Channel::new();
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum StreamState {
+    Stopped,
+    Streaming,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum HostCmd {
+    Start,
+    Stop,
+    LogTest,
+    Stats,
+}
+
+/// `Sink` that stages each frame into a small scratch buffer, then
+/// atomically pushes the whole frame into the TX pipe on
+/// `commit_frame()`. If the pipe can't fit the frame, the whole frame
+/// is discarded — never a partial. This is essential for wire-format
+/// integrity: a half-emitted frame would desync the host's parser.
+///
+/// Max frame size is bounded by tag=0x01 with n=255 → 2 + 4*255 = 1022 B.
+/// Round up to 1024 for headroom.
+const SINK_FRAME_MAX: usize = 1024;
+struct PipeSink {
+    buf: [u8; SINK_FRAME_MAX],
+    n: usize,
+    /// True if any push in the current frame overflowed the scratch.
+    overflowed: bool,
+    /// Total bytes discarded (sum of partial-frame sizes that didn't
+    /// fit either the scratch or the pipe).
+    dropped: u32,
+}
+
+impl PipeSink {
+    const fn new() -> Self {
+        Self {
+            buf: [0; SINK_FRAME_MAX],
+            n: 0,
+            overflowed: false,
+            dropped: 0,
+        }
+    }
+}
+
+impl Sink for PipeSink {
+    fn push(&mut self, b: u8) -> bool {
+        if self.n < self.buf.len() {
+            self.buf[self.n] = b;
+            self.n += 1;
+            true
+        } else {
+            self.overflowed = true;
+            false
+        }
+    }
+
+    fn commit_frame(&mut self) {
+        let frame_size = self.n;
+        self.n = 0;
+        if self.overflowed {
+            // Scratch overflowed — encoder bug or a frame larger than
+            // SINK_FRAME_MAX. Either way the frame is unusable.
+            self.dropped = self.dropped.saturating_add(frame_size as u32);
+            self.overflowed = false;
+            return;
+        }
+        // All-or-nothing: only enqueue when the whole frame fits, so the
+        // pipe never carries a torn frame.
+        if TX_PIPE.free_capacity() < frame_size {
+            self.dropped = self.dropped.saturating_add(frame_size as u32);
+            return;
+        }
+        // `try_write` returns the size of the largest *contiguous* free
+        // region, which can be smaller than `free_capacity()` near the
+        // ring's wrap point. Loop until the whole frame is in. We hold
+        // the only writer, so progress is guaranteed — each call
+        // returns ≥ 1 byte until the frame is fully buffered.
+        let mut off = 0;
+        while off < frame_size {
+            match TX_PIPE.try_write(&self.buf[off..frame_size]) {
+                Ok(n) => off += n,
+                Err(_) => unreachable!("free_capacity was pre-checked"),
+            }
+        }
+    }
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -70,7 +168,7 @@ async fn main(_spawner: Spawner) {
 
     let mut config = Config::new(0xc0de, 0xcafe);
     config.manufacturer = Some("aq-lcd-grab");
-    config.product = Some("Capture PoC (binary)");
+    config.product = Some("Capture board (Pico 2 W)");
     config.serial_number = Some("aq-lcd-grab");
     config.max_power = 100;
     config.max_packet_size_0 = 64;
@@ -124,7 +222,7 @@ async fn main(_spawner: Spawner) {
     let mut usb = builder.build();
 
     let pio = Pio::new(p.PIO0, Irqs);
-    // SAFETY: RING_BUF is only ever borrowed here, exactly once, for the
+    // SAFETY: RING_BUF is only borrowed here, exactly once, for the
     // remainder of the program.
     let ring_slice: &'static mut [RawSample] = unsafe {
         let ptr = core::ptr::addr_of_mut!(RING_BUF.0) as *mut RawSample;
@@ -158,70 +256,131 @@ async fn main(_spawner: Spawner) {
         ring_slice,
     );
 
-    let (mut sender, _receiver) = cdc_class.split();
+    let (mut sender, mut receiver) = cdc_class.split();
+
+    let mut encoder = Encoder::default();
+    let mut sink = PipeSink::new();
+    wire::encode_log("aq-lcd-grab pico firmware booted, awaiting START", &mut sink);
 
     let usb_fut = usb.run();
 
-    let sender_fut = async {
+    // USB TX task — drains the byte pipe out the CDC sender.
+    //
+    // The RP2350 USB is Full-Speed (1 SOF/ms). The Linux cdc_acm host
+    // driver typically issues one IN URB per USB frame, so each
+    // `write_packet` we send costs one frame's worth of latency
+    // regardless of packet size. To approach the FS bulk ceiling
+    // (≈ 64 kB/s), we must fill every packet to the 64-byte max.
+    //
+    // Strategy: wake on the first byte (latency floor for sparse
+    // traffic), then wait *briefly* for the packet to fill before
+    // shipping. The wait is bounded so interactive acks / log lines
+    // still flush within a few ms.
+    let tx_fut = async {
+        use embassy_futures::select::{select, Either};
         sender.wait_connection().await;
         let mut buf = [0u8; 64];
-        let mut fill: usize = 0;
-        // Cap how many transactions we batch before flushing. Keeps
-        // viewer latency bounded during sustained tile bursts when the
-        // channel always has more ready — without it the inner loop
-        // could starve the flush indefinitely.
-        const BATCH_CAP: u32 = 32;
         loop {
-            let tx = TX_CHANNEL.receive().await;
-            if let Err(_) =
-                encode_frame(&mut sender, &mut buf, &mut fill, &tx).await
-            {
+            // Block until at least one byte lands.
+            let mut n = TX_PIPE.read(&mut buf).await;
+            // Top up the packet, waiting up to ~1 USB frame for more
+            // bytes. This lets a steady producer at modest rate (~10s
+            // kB/s) fill 64-byte packets instead of dribbling out a
+            // packet per byte.
+            while n < buf.len() {
+                let tail = &mut buf[n..];
+                match select(TX_PIPE.read(tail), Timer::after_millis(2)).await {
+                    Either::First(extra) => n += extra,
+                    Either::Second(_) => break,
+                }
+            }
+            let full_packet = n == buf.len();
+            if sender.write_packet(&buf[..n]).await.is_err() {
                 sender.wait_connection().await;
-                fill = 0;
                 continue;
             }
-            let mut batched: u32 = 1;
-            while batched < BATCH_CAP {
-                match TX_CHANNEL.try_receive() {
-                    Ok(tx) => {
-                        if let Err(_) =
-                            encode_frame(&mut sender, &mut buf, &mut fill, &tx)
-                                .await
-                        {
-                            sender.wait_connection().await;
-                            fill = 0;
-                            break;
-                        }
-                        batched += 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-            // Flush the tail. If we just emitted exactly 64 bytes the
-            // host needs a ZLP to terminate the transfer.
-            if fill > 0 {
-                if let Err(_) = sender.write_packet(&buf[..fill]).await {
+            if full_packet && TX_PIPE.is_empty() {
+                if sender.write_packet(&[]).await.is_err() {
                     sender.wait_connection().await;
                 }
-                fill = 0;
-            } else if let Err(_) = sender.write_packet(&[]).await {
-                sender.wait_connection().await;
             }
         }
     };
 
-    let capture_fut = async {
-        Timer::after_millis(500).await;
-        log_line(TX_CHANNEL.sender(), "ring capture starting");
+    // USB RX task — single-byte commands from the host. The host's
+    // sync protocol sends single bytes (`0x01..=0x04`); we still loop
+    // over `read_packet`'s buffer in case a future host bundles
+    // commands.
+    let rx_fut = async {
+        let mut buf = [0u8; 64];
+        loop {
+            let n = match receiver.read_packet(&mut buf).await {
+                Ok(n) => n,
+                Err(_) => {
+                    receiver.wait_connection().await;
+                    continue;
+                }
+            };
+            for &b in &buf[..n] {
+                let cmd = match b {
+                    HOST_CMD_START => HostCmd::Start,
+                    HOST_CMD_STOP => HostCmd::Stop,
+                    HOST_CMD_LOG_TEST => HostCmd::LogTest,
+                    HOST_CMD_STATS => HostCmd::Stats,
+                    _ => continue, // unknown command, ignore
+                };
+                // Block here if the queue is full — the capture task
+                // drains it on every poll, so backpressure is benign.
+                CMD_QUEUE.send(cmd).await;
+            }
+        }
+    };
 
-        let mut decoder = Decoder::default();
+    // Capture-drain task — pulls samples, feeds encoder, handles state
+    // transitions and overrun reporting.
+    let mut state = StreamState::Stopped;
+    let cap_fut = async {
         let mut chunk = [0u32; DRAIN_CHUNK];
         let mut idle_ticks: u32 = 0;
         loop {
-            // Drain everything available before sleeping, not just one
-            // DRAIN_CHUNK. The ring is much larger than the chunk, so
-            // capping at DRAIN_CHUNK per polling tick would needlessly
-            // give back our headroom under sustained traffic.
+            // Drain all pending host commands. Every START/STOP gets an
+            // ack even when it's a no-op for the current state — the
+            // protocol guarantees this so the host can resync by
+            // sending STOP unconditionally.
+            while let Ok(cmd) = CMD_QUEUE.try_receive() {
+                match cmd {
+                    HostCmd::Start => {
+                        if state == StreamState::Stopped {
+                            encoder.reset();
+                            state = StreamState::Streaming;
+                        }
+                        wire::encode_started(&mut sink);
+                    }
+                    HostCmd::Stop => {
+                        if state == StreamState::Streaming {
+                            encoder.flush(&mut sink);
+                            state = StreamState::Stopped;
+                        }
+                        wire::encode_stopped(&mut sink);
+                    }
+                    HostCmd::LogTest => wire::encode_log("ping", &mut sink),
+                    HostCmd::Stats => {
+                        let mut msg = heapless::String::<64>::new();
+                        use core::fmt::Write as _;
+                        let _ = write!(
+                            msg,
+                            "stats: tx_dropped={} cap_dropped={}",
+                            sink.dropped,
+                            capture.peek_dropped(),
+                        );
+                        wire::encode_log(&msg, &mut sink);
+                    }
+                }
+            }
+
+            // Drain the PIO ring even when STOPPED — keeps it empty so
+            // we don't trigger an overrun the moment we transition into
+            // STREAMING.
             let mut total = 0usize;
             loop {
                 let n = capture.drain(&mut chunk);
@@ -229,38 +388,48 @@ async fn main(_spawner: Spawner) {
                     break;
                 }
                 total += n;
-                for &raw in &chunk[..n] {
-                    let sample = DecSample::from_raw(raw);
-                    if let Some(tx) = decoder.feed(sample) {
-                        TX_CHANNEL.send(tx).await;
+                if state == StreamState::Streaming {
+                    for &raw in &chunk[..n] {
+                        // PIO packs `{cs, dc, db15..db0}` (low 16 bits =
+                        // data, bit 16 = CS, bit 17 = DC; see
+                        // `pio_capture.rs`). The wire protocol carries
+                        // the sample as a single LE u32 = `pa | pb<<16`.
+                        // For the Pico the natural mapping is:
+                        //   pa (low 16) = DB0..DB15 (logical order)
+                        //   pb (hi 16)  = bit 0=CS, bit 1=DC, others 0
+                        // Mask the noise bits above 17 so spurious
+                        // unused-pin flips don't break RLE runs.
+                        let sample = raw & 0x0003_FFFF;
+                        encoder.feed(sample, &mut sink);
                     }
                 }
             }
+
+            if total > 0 && state == StreamState::Streaming {
+                // Flush per drain tick so latency is bounded by the
+                // drain period, not by waiting for a 255-sample fill.
+                encoder.flush(&mut sink);
+            }
+
+            // Overrun reporting. take_dropped() resets the counter, so
+            // we only emit when there's something to report.
             let dropped = capture.take_dropped();
-            if dropped > 0 {
-                let mut msg = heapless::String::<32>::new();
-                use core::fmt::Write as _;
-                let _ = write!(msg, "overrun: dropped {dropped}");
-                // Use blocking send: the overrun message is the whole
-                // point of the detection, and try_send silently drops
-                // it exactly when the channel is full — which is when
-                // overruns happen.
-                let mut tx = Transaction::new(proto::CMD_LOG);
-                for chunk in msg.as_bytes().chunks(2) {
-                    let lo = chunk[0];
-                    let hi = if chunk.len() > 1 { chunk[1] } else { 0 };
-                    if tx.data.push(u16::from_le_bytes([lo, hi])).is_err() {
-                        break;
-                    }
-                }
-                TX_CHANNEL.send(tx).await;
+            if dropped > 0 && state == StreamState::Streaming {
+                wire::encode_overrun(dropped, &mut sink);
             }
+
+            // Always yield once per outer iteration. Under sustained
+            // capture, the inner `capture.drain` loop never returns
+            // zero, so without this yield the TX and RX tasks would
+            // never get scheduled — the pipe would fill and frames
+            // would start getting dropped at `commit_frame`.
+            embassy_futures::yield_now().await;
+
             if total == 0 {
                 idle_ticks = idle_ticks.wrapping_add(1);
-                if idle_ticks.is_multiple_of(2500) {
-                    // Every ~5 s of pure idle, breadcrumb so the host
-                    // can tell "no traffic" from "firmware wedged".
-                    log_line(TX_CHANNEL.sender(), "idle");
+                if idle_ticks.is_multiple_of(2500) && state == StreamState::Streaming {
+                    // ~5 s heartbeat while streaming idle.
+                    wire::encode_log("idle", &mut sink);
                 }
                 Timer::after_millis(2).await;
             } else {
@@ -269,80 +438,5 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-    join3(usb_fut, sender_fut, capture_fut).await;
+    join(join3(usb_fut, tx_fut, rx_fut), cap_fut).await;
 }
-
-/// Encode one transaction into the rolling 64-byte USB packet buffer.
-///
-/// Flushes full 64-byte packets as the buffer fills, but leaves any
-/// trailing < 64 bytes in `*fill` so the caller can pack more
-/// transactions into the same wire packet. Magic 0xAA55 at the start
-/// of each tx self-delimits so back-to-back packing is unambiguous.
-///
-/// Memory-write frames whose data is all one value are RLE-encoded
-/// (one (length, value) pair, 4 bytes) instead of sent raw.
-async fn encode_frame<'d, D: embassy_usb::driver::Driver<'d>>(
-    sender: &mut embassy_usb::class::cdc_acm::Sender<'d, D>,
-    buf: &mut [u8; 64],
-    fill: &mut usize,
-    tx: &Transaction,
-) -> Result<(), EndpointError> {
-    let is_mw = tx.cmd == 0x2C || tx.cmd == proto::CMD_MEMORY_WRITE_CONTINUE;
-    let uniform = is_mw
-        && !tx.data.is_empty()
-        && tx.data.len() <= u16::MAX as usize
-        && tx.data.iter().all(|&w| w == tx.data[0]);
-
-    macro_rules! push {
-        ($byte:expr) => {{
-            buf[*fill] = $byte;
-            *fill += 1;
-            if *fill == 64 {
-                sender.write_packet(buf).await?;
-                *fill = 0;
-            }
-        }};
-    }
-
-    if uniform {
-        let header = proto::encode_header(tx.cmd, 2u16 | proto::RLE_FLAG);
-        for &b in &header {
-            push!(b);
-        }
-        let run_len = tx.data.len() as u16;
-        let value = tx.data[0];
-        for &w in &[run_len, value] {
-            push!((w & 0xFF) as u8);
-            push!((w >> 8) as u8);
-        }
-    } else {
-        let count = tx.data.len() as u16;
-        let header = proto::encode_header(tx.cmd, count);
-        for &b in &header {
-            push!(b);
-        }
-        for &w in &tx.data {
-            push!((w & 0xFF) as u8);
-            push!((w >> 8) as u8);
-        }
-    }
-
-    Ok(())
-}
-
-fn log_line(ch: TxTx<'_>, msg: &str) {
-    let mut tx = Transaction::new(proto::CMD_LOG);
-    // Pack two ASCII chars per u16, LE. Trailing odd byte gets a NUL.
-    let bytes = msg.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let lo = bytes[i];
-        let hi = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
-        if tx.data.push(u16::from_le_bytes([lo, hi])).is_err() {
-            break;
-        }
-        i += 2;
-    }
-    let _ = ch.try_send(tx);
-}
-

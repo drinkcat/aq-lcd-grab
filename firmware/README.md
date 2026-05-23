@@ -3,11 +3,14 @@
 Embassy firmware for the Raspberry Pi Pico 2 W (RP2350) — capture target for
 the [target device display protocol reverse-engineering](../docs/display_notes.md).
 
-Current state: PIO+DMA capture PoC. Waits for write strobes on GPIO 18 (WR),
-samples `{CS, DC, DB15..DB0}` on each WR rising edge, drains a 4096-word
-buffer via DMA, and dumps the first 32 decoded samples over USB CDC. With
-nothing connected to GPIO 18, the capture loop suspends correctly — proving
-the PIO/DMA wiring is sound.
+Current state: PIO+DMA capture, streaming raw `(pa, pb)` samples to the
+host over USB CDC using the tagged wire protocol in
+[`docs/wire_protocol.md`](../docs/wire_protocol.md). On each WR rising
+edge the PIO captures `{CS, DC, DB15..DB0}` (18 bits) into a 32 KiB DMA
+ring; the firmware splits each sample into `pa = DB0..DB15` and
+`pb = {CS at bit 0, DC at bit 1}`, RLE-compresses consecutive identical
+pairs, and ships the byte stream out. The firmware boots quiet — send
+`0x01` (START) on the CDC link to begin streaming, `0x02` (STOP) to halt.
 
 ## Toolchain setup
 
@@ -40,27 +43,12 @@ The first-ever flash still needs a manual BOOTSEL (hold the button while
 plugging in), since the picotool reset interface only exists once our
 firmware is running.
 
-## Reading the USB serial output
+## Reading the USB stream
 
-After flashing, `/dev/ttyACM0` appears (the embassy-usb-logger CDC device):
-
-```sh
-stty -F /dev/ttyACM0 raw -echo
-cat /dev/ttyACM0
-```
-
-**Start the reader before reboot** — otherwise the startup log lines are
-lost. Run `cat /dev/ttyACM0` in a separate terminal, then `cargo run` in
-another.
-
-You should see:
-
-```
-aq-lcd-grab capture PoC starting
-waiting for 4096 samples on WR (GPIO 18)…
-```
-
-…and then nothing until WR pulses arrive on GPIO 18.
+After flashing, `/dev/ttyACM0` appears as the CDC device. The on-wire
+format is binary (see [`docs/wire_protocol.md`](../docs/wire_protocol.md)),
+so don't `cat` it — use the viewer in [`host/`](../host/), which speaks
+the START/STOP handshake and decodes the frames.
 
 ## Pin assignment
 

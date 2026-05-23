@@ -3,10 +3,10 @@
 //! Pin assignment (consecutive GPIOs required for `in pins, N`):
 //!
 //!     GPIO 0..=15 -> DB0..=DB15  (16-bit data bus)
-//!     GPIO 16     -> "D/C"  — name is a guess; this is the line we use for
-//!                             8080 cmd/data framing (boundary rule in decoder.rs)
-//!     GPIO 17     -> "CS"   — name is a guess; the other 8080 control line,
-//!                             captured but not used for framing
+//!     GPIO 16     -> "D/C"  — name is a guess; this is the line the
+//!                             host uses for 8080 cmd/data framing.
+//!     GPIO 17     -> "CS"   — name is a guess; the other 8080 control
+//!                             line, captured but not used for framing.
 //!     GPIO 18     -> WR     — write strobe, sample trigger
 //!
 //! Each captured word in the RX FIFO is laid out (LSB first):
@@ -43,10 +43,12 @@ pub struct RingCapture<'d> {
     log2_len: u8,
     /// Next sample index we will read out.
     read_pos: u32,
-    /// Monotonic count of samples we know the writer dropped on us.
-    /// Saturates at u32::MAX (which would be >4 billion samples, so
-    /// practically unbounded).
+    /// Count of samples we know the writer dropped on us, since the
+    /// last `take_dropped()`. Saturates at u32::MAX.
     dropped_samples: u32,
+    /// Lifetime cumulative count of dropped samples, for STATS
+    /// reporting. Never reset; saturates at u32::MAX.
+    dropped_total: u32,
 }
 
 impl<'d> RingCapture<'d> {
@@ -193,6 +195,7 @@ impl<'d> RingCapture<'d> {
             log2_len,
             read_pos: 0,
             dropped_samples: 0,
+            dropped_total: 0,
         }
     }
 
@@ -240,6 +243,7 @@ impl<'d> RingCapture<'d> {
             // it). Resync to the slot just past `w`, i.e. the oldest
             // valid sample — that slot will be overwritten last.
             self.dropped_samples = self.dropped_samples.saturating_add(fill);
+            self.dropped_total = self.dropped_total.saturating_add(fill);
             self.read_pos = w.wrapping_add(1) & mask;
         }
 
@@ -255,9 +259,14 @@ impl<'d> RingCapture<'d> {
     }
 
     /// Take the count of samples lost to ring overrun since the last
-    /// call. Resets the internal counter.
+    /// call. Resets the internal delta counter.
     pub fn take_dropped(&mut self) -> u32 {
         core::mem::replace(&mut self.dropped_samples, 0)
+    }
+
+    /// Lifetime count of dropped samples. Never resets — for STATS.
+    pub fn peek_dropped(&self) -> u32 {
+        self.dropped_total
     }
 }
 
