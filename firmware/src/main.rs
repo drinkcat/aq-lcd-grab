@@ -101,9 +101,14 @@ struct PipeSink {
     n: usize,
     /// True if any push in the current frame overflowed the scratch.
     overflowed: bool,
-    /// Total bytes discarded (sum of partial-frame sizes that didn't
-    /// fit either the scratch or the pipe).
+    /// Bytes discarded since boot — sum of dropped frame sizes. STATS
+    /// surfaces this; it isn't strictly needed for wire integrity.
     dropped: u32,
+    /// Samples (= WR edges) lost to dropped BLOCK/RUN frames, *not yet*
+    /// reported to the host. The capture task drains this into a
+    /// `tag=0xFD` overrun frame at the next opportunity so the host
+    /// knows a gap exists. Cleared on every successful drain.
+    pending_dropped_samples: u32,
 }
 
 impl PipeSink {
@@ -113,7 +118,29 @@ impl PipeSink {
             n: 0,
             overflowed: false,
             dropped: 0,
+            pending_dropped_samples: 0,
         }
+    }
+
+    /// Pull and reset the accumulated count of samples lost to TX-pipe
+    /// drops. The capture task calls this to fold pipe drops into the
+    /// same overrun frame it already emits for PIO-ring drops.
+    fn take_dropped_samples(&mut self) -> u32 {
+        core::mem::replace(&mut self.pending_dropped_samples, 0)
+    }
+
+    /// Account a dropped frame. Looks at the staged tag/n to decide
+    /// how many samples (WR edges) the dropped frame would have
+    /// represented; non-sample frames (log, overrun, acks) count 0.
+    fn account_dropped(&mut self, frame_size: usize) {
+        self.dropped = self.dropped.saturating_add(frame_size as u32);
+        let samples = match self.buf.first().copied() {
+            Some(wire::TAG_BLOCK) | Some(wire::TAG_RUN) if self.buf.len() >= 2 => {
+                self.buf[1] as u32
+            }
+            _ => 0,
+        };
+        self.pending_dropped_samples = self.pending_dropped_samples.saturating_add(samples);
     }
 }
 
@@ -135,14 +162,14 @@ impl Sink for PipeSink {
         if self.overflowed {
             // Scratch overflowed — encoder bug or a frame larger than
             // SINK_FRAME_MAX. Either way the frame is unusable.
-            self.dropped = self.dropped.saturating_add(frame_size as u32);
+            self.account_dropped(frame_size);
             self.overflowed = false;
             return;
         }
         // All-or-nothing: only enqueue when the whole frame fits, so the
         // pipe never carries a torn frame.
         if TX_PIPE.free_capacity() < frame_size {
-            self.dropped = self.dropped.saturating_add(frame_size as u32);
+            self.account_dropped(frame_size);
             return;
         }
         // `try_write` returns the size of the largest *contiguous* free
@@ -411,11 +438,18 @@ async fn main(_spawner: Spawner) {
                 encoder.flush(&mut sink);
             }
 
-            // Overrun reporting. take_dropped() resets the counter, so
-            // we only emit when there's something to report.
-            let dropped = capture.take_dropped();
-            if dropped > 0 && state == StreamState::Streaming {
-                wire::encode_overrun(dropped, &mut sink);
+            // Overrun reporting. Combine PIO-ring drops (capture
+            // overran the DMA buffer) and TX-pipe drops (encoder
+            // produced frames faster than USB could ship them) into a
+            // single tag=0xFD frame — both manifest the same way on
+            // the host: a gap of N missing WR edges in the stream.
+            if state == StreamState::Streaming {
+                let from_capture = capture.take_dropped();
+                let from_pipe = sink.take_dropped_samples();
+                let total_dropped = from_capture.saturating_add(from_pipe);
+                if total_dropped > 0 {
+                    wire::encode_overrun(total_dropped, &mut sink);
+                }
             }
 
             // Always yield once per outer iteration. Under sustained
