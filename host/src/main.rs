@@ -1,20 +1,23 @@
+mod bus_decoder;
 mod decoder;
 mod framebuffer;
+mod permute;
 mod wire;
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::io::{BufReader, Read};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use eframe::egui;
+use bus_decoder::{BusDecoder, Frame};
 use framebuffer::{Framebuffer, WindowWrite};
-use wire::{CMD_LOG, Frame, log_text, read_frame};
+use wire::{Decoder as WireDecoder, Event, HOST_CMD_START, HOST_CMD_STOP};
 
 #[derive(Parser, Debug)]
 #[command(about = "Live viewer for the aq-lcd-grab firmware capture stream")]
@@ -73,7 +76,6 @@ fn cmd_name(cmd: u8) -> &'static str {
         0xE0 => "POSITIVE_GAMMA",
         0xE1 => "NEGATIVE_GAMMA",
         0xF7 => "ADJUST_CONTROL_3",
-        0xFF => "LOG",
         _ => "?",
     }
 }
@@ -145,69 +147,174 @@ fn reader_loop(
     dump_dir: Option<PathBuf>,
     shared: Arc<Mutex<Shared>>,
 ) -> anyhow::Result<()> {
-    let mut reader: Box<dyn Read + Send> = if let Some(path) = replay {
-        let f = std::fs::File::open(&path).with_context(|| format!("opening {path}"))?;
-        Box::new(BufReader::new(f))
-    } else {
-        let port_handle = serialport::new(&port, 115_200)
-            .timeout(Duration::from_millis(250))
-            .open()
-            .with_context(|| format!("opening serial port {port}"))?;
-        eprintln!("reader: opened {port}");
-        Box::new(BufReader::new(port_handle))
-    };
+    let (mut reader, mut writer): (Box<dyn Read + Send>, Option<Box<dyn Write + Send>>) =
+        if let Some(path) = replay {
+            let f = std::fs::File::open(&path).with_context(|| format!("opening {path}"))?;
+            (Box::new(f), None)
+        } else {
+            // Baud doesn't matter for the Pico (USB CDC ignores it) but
+            // gives the right rate for UART-attached boards like the
+            // F103.
+            let port_handle = serialport::new(&port, 921_600)
+                .timeout(Duration::from_millis(250))
+                .open()
+                .with_context(|| format!("opening serial port {port}"))?;
+            let writer = port_handle
+                .try_clone()
+                .with_context(|| "cloning serial handle for writer")?;
+            eprintln!("reader: opened {port}");
+            (Box::new(port_handle), Some(Box::new(writer)))
+        };
 
+    if let Some(w) = writer.as_mut() {
+        sync(reader.as_mut(), w.as_mut())?;
+    }
+
+    let mut wire = WireDecoder::new();
+    let mut bus = BusDecoder::new();
+    let mut glyphs = decoder::Decoder::new();
     let mut seen: HashSet<u64> = HashSet::new();
-    let mut dec = decoder::Decoder::new();
+    let mut buf = [0u8; 4096];
 
     loop {
-        let frame = match read_frame(&mut reader) {
-            Ok(f) => Some(f),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => None,
+        let read = match reader.read(&mut buf) {
+            Ok(0) => bail!("stream EOF"),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
             Err(e) => return Err(e.into()),
         };
+        let events = if read > 0 {
+            wire.feed(&buf[..read])?
+        } else {
+            Vec::new()
+        };
+
         let mut g = shared.lock().unwrap();
-        if let Some(frame) = frame {
-            if frame.cmd == CMD_LOG {
-                let text = log_text(&frame.data);
-                println!("• {text}");
-                push_log(&mut g.log, LogEntry::Msg(text));
-            } else {
-                println!("{}", format_tx(&frame));
-                let win = g.fb.apply(&frame);
-                push_log(&mut g.log, LogEntry::Tx(frame));
-                if let Some(win) = win.as_ref() {
-                    let out = dec.ingest(win);
-                    if let Some(m) = out.glyph {
-                        let msg = format!(
-                            "→ {}x{}@({:03},{:03}) = {:?}",
-                            m.w, m.h, m.disp_x, m.disp_y, m.label
-                        );
-                        println!("{msg}");
-                        push_log(&mut g.log, LogEntry::Msg(msg));
-                    }
-                    for r in out.completed_rows {
-                        let msg = format!("= {}: {:?}", r.name, r.value);
-                        println!("{msg}");
-                        push_log(&mut g.log, LogEntry::Msg(msg.clone()));
-                        g.values.insert(r.name, r.value);
+        for ev in events {
+            match ev {
+                Event::Block(samples) => {
+                    for (pa, pb) in samples {
+                        let (data, dc, _cs) = permute::permute_pico(pa, pb);
+                        if let Some(tx) = bus.feed(data, dc) {
+                            handle_frame(&mut g, &mut glyphs, dump_dir.as_deref(), &mut seen, tx);
+                        }
                     }
                 }
-                if let (Some(dir), Some(win)) = (dump_dir.as_ref(), win) {
-                    dump_window(dir, &win, &mut seen);
+                Event::Run { n, pa, pb } => {
+                    let (data, dc, _cs) = permute::permute_pico(pa, pb);
+                    if let Some(tx) = bus.feed_run(n as usize, data, dc) {
+                        handle_frame(&mut g, &mut glyphs, dump_dir.as_deref(), &mut seen, tx);
+                    }
+                }
+                Event::Overrun { dropped } => {
+                    let msg = format!("(firmware lost {dropped} WR edges)");
+                    println!("! {msg}");
+                    push_log(&mut g.log, LogEntry::Msg(msg));
+                }
+                Event::Log(text) => {
+                    println!("• {text}");
+                    push_log(&mut g.log, LogEntry::Msg(text));
+                }
+                Event::Started | Event::Stopped => {
+                    // Steady-state acks: just note them in the log.
+                    let s = if matches!(ev, Event::Started) { "STARTED" } else { "STOPPED" };
+                    push_log(&mut g.log, LogEntry::Msg(s.into()));
                 }
             }
-        } else {
-            // Idle pump: settle any rows that have stopped updating.
-            for r in dec.flush() {
+        }
+        if read == 0 {
+            // Idle pump: settle any glyph rows that have stopped updating.
+            for r in glyphs.flush() {
                 let msg = format!("= {}: {:?}", r.name, r.value);
                 println!("{msg}");
                 push_log(&mut g.log, LogEntry::Msg(msg.clone()));
                 g.values.insert(r.name, r.value);
             }
         }
-        drop(g);
     }
+}
+
+/// Replays `frame` into the framebuffer + glyph decoder, dumps the
+/// resulting window if a dump dir is set, and pushes log lines.
+fn handle_frame(
+    g: &mut Shared,
+    glyphs: &mut decoder::Decoder,
+    dump_dir: Option<&Path>,
+    seen: &mut HashSet<u64>,
+    frame: Frame,
+) {
+    println!("{}", format_tx(&frame));
+    let win = g.fb.apply(&frame);
+    push_log(&mut g.log, LogEntry::Tx(frame));
+    if let Some(win) = win.as_ref() {
+        let out = glyphs.ingest(win);
+        if let Some(m) = out.glyph {
+            let msg = format!(
+                "→ {}x{}@({:03},{:03}) = {:?}",
+                m.w, m.h, m.disp_x, m.disp_y, m.label
+            );
+            println!("{msg}");
+            push_log(&mut g.log, LogEntry::Msg(msg));
+        }
+        for r in out.completed_rows {
+            let msg = format!("= {}: {:?}", r.name, r.value);
+            println!("{msg}");
+            push_log(&mut g.log, LogEntry::Msg(msg.clone()));
+            g.values.insert(r.name, r.value);
+        }
+    }
+    if let (Some(dir), Some(win)) = (dump_dir, win) {
+        dump_window(dir, &win, seen);
+    }
+}
+
+/// Handshake: drain any backlog, send STOP and wait for `0xFC`, then
+/// send START and wait for `0xFB`. After this returns, the next byte
+/// read starts a fresh frame.
+fn sync(reader: &mut (dyn Read + Send), writer: &mut (dyn Write + Send)) -> anyhow::Result<()> {
+    let mut scratch = [0u8; 4096];
+
+    // 1. Drain everything currently buffered (250 ms is much longer
+    //    than any in-flight frame at 921600 baud).
+    let drain_deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < drain_deadline {
+        match reader.read(&mut scratch) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+
+    // 2. Send STOP, scan for 0xFC.
+    writer.write_all(&[HOST_CMD_STOP])?;
+    writer.flush()?;
+    scan_for(reader, 0xFC, "STOPPED ack")?;
+
+    // 3. Send START, scan for 0xFB.
+    writer.write_all(&[HOST_CMD_START])?;
+    writer.flush()?;
+    scan_for(reader, 0xFB, "STARTED ack")?;
+
+    eprintln!("reader: synced (STARTED)");
+    Ok(())
+}
+
+/// Read bytes until `target` shows up. Discards anything before it.
+fn scan_for(reader: &mut (dyn Read + Send), target: u8, what: &str) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut buf = [0u8; 256];
+    while Instant::now() < deadline {
+        match reader.read(&mut buf) {
+            Ok(0) => return Err(anyhow!("EOF while waiting for {what}")),
+            Ok(n) => {
+                if buf[..n].contains(&target) {
+                    return Ok(());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(anyhow!("timeout waiting for {what}"))
 }
 
 /// Minimum window dimension considered a glyph worth keeping. Filters

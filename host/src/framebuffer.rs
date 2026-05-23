@@ -10,7 +10,7 @@
 //! bits of a 16-bit bus word, so a SET_COLUMN_ADDRESS transaction is
 //! 4 *words*, not 4 *bytes*. MEMORY_WRITE pixels are 16-bit RGB565.
 
-use crate::wire::Frame;
+use crate::bus_decoder::Frame;
 
 pub const WIDTH: u16 = 320;
 pub const HEIGHT: u16 = 480;

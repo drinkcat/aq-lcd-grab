@@ -173,9 +173,11 @@ swap freely during routing):
 
 The header [`firmware/src/pio_capture.rs`](../firmware/src/pio_capture.rs)
 shows the prototype's bit-to-pin mapping for the Pico 2 W — it's
-purely informational for the STM32 design; the protocol decoder
-in [`firmware/src/decoder.rs`](../firmware/src/decoder.rs) is the
-piece that gains a permutation table on the F103.
+purely informational for the STM32 design; the host's bus decoder
+([`host/src/bus_decoder.rs`](../host/src/bus_decoder.rs)) consumes
+permuted samples from the per-board permutation table in
+[`host/src/permute.rs`](../host/src/permute.rs) — that table is the
+piece that grows an F103 entry alongside the existing Pico one.
 
 ##### Capture mechanism (2 DMA channels, F103-verified)
 
@@ -223,7 +225,8 @@ half-word from `GPIOx->IDR` to the next ring slot. Wrap by setting
 the destination buffer to a power-of-2-aligned span and reloading
 the counter via circular mode (`CIRC=1`).
 - **Why DC capture matters:** the protocol decoder uses DC as the
-  command/data framing line (see [decoder.rs](../firmware/src/decoder.rs)).
+  command/data framing line (see
+  [`host/src/bus_decoder.rs`](../host/src/bus_decoder.rs)).
   Without it, we can't tell which words are command bytes (0x2A,
   0x2B, 0x2C…) vs RGB565 pixel data. Capturing it on a second DMA
   channel is the F030 equivalent of what the RP2350 PIO did by
@@ -616,8 +619,8 @@ and is now de-risked.
 The PCB router is free to assign any PA pin to any data-PA bit
 and any PB pin to any data-PB bit (subject to the hard constraints
 in "Pin allocation" above). The firmware streams raw `GPIOA->IDR`
-and `GPIOB->IDR` samples; the host decoder
-([`firmware/src/decoder.rs`](../firmware/src/decoder.rs)) needs
+and `GPIOB->IDR` samples; the host permute layer
+([`host/src/permute.rs`](../host/src/permute.rs)) needs
 a static table mapping (port, physical bit) → logical DB bit so
 that captured samples can be interpreted regardless of routing.
 
@@ -744,6 +747,7 @@ Secondary (F030C8T6 alternative, kept for reasoning context):
 
 Project artefacts:
 - [display_notes.md](display_notes.md) — captured protocol details
-- RP2350 prototype firmware (display-protocol decode that carries
-  over): [`firmware/src/pio_capture.rs`](../firmware/src/pio_capture.rs),
-  [`firmware/src/decoder.rs`](../firmware/src/decoder.rs)
+- RP2350 prototype firmware (PIO+DMA capture front-end):
+  [`firmware/src/pio_capture.rs`](../firmware/src/pio_capture.rs).
+  Bus-protocol decode lives host-side now in
+  [`host/src/bus_decoder.rs`](../host/src/bus_decoder.rs).

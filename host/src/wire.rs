@@ -1,86 +1,140 @@
-//! Wire-format parser (mirror of `firmware/src/proto.rs`).
+//! Wire-format parser for the capture board → host stream.
 //!
-//! Reads framed transactions from a byte stream:
+//! Mirrors the encoder in `firmware/src/wire.rs` and
+//! `firmware-stm32/src/wire.rs`; see `docs/wire_protocol.md` for the
+//! framing spec. Feed bytes in via [`Decoder::feed`]; pull decoded
+//! [`Event`]s back. The decoder keeps any partial trailing frame for
+//! the next call, so the caller can pass whatever-size reads the OS
+//! returns.
 //!
-//!     [0xAA] [0x55]            magic
-//!     [cmd  u8 ]                command byte (0xFF = log line)
-//!     [count u16 LE]            data-word count, high bit = RLE flag
-//!     [data  u16 LE × N]        payload (raw, or (len, value) pairs)
-//!
-//! On stream resync, we scan for the magic prefix and resume.
+//! Frame integrity is the firmware's job (it stages frames atomically
+//! into its TX pipe). If the host ever sees an unrecognised tag, that
+//! means the stream desynced — `feed` returns `Err`, the caller is
+//! expected to resync with STOP/drain/START.
 
-use std::io::{self, Read};
+use std::io;
 
-pub const MAGIC_0: u8 = 0xAA;
-pub const MAGIC_1: u8 = 0x55;
-pub const CMD_LOG: u8 = 0xFE;
-pub const RLE_FLAG: u16 = 0x8000;
-pub const COUNT_MASK: u16 = 0x7FFF;
+pub const TAG_BLOCK: u8 = 0x01;
+pub const TAG_RUN: u8 = 0x02;
+pub const TAG_OVERRUN: u8 = 0xFD;
+pub const TAG_LOG: u8 = 0xFE;
+pub const TAG_STARTED: u8 = 0xFB;
+pub const TAG_STOPPED: u8 = 0xFC;
 
-#[derive(Clone, Debug)]
-pub struct Frame {
-    pub cmd: u8,
-    pub data: Vec<u16>,
+pub const HOST_CMD_START: u8 = 0x01;
+pub const HOST_CMD_STOP: u8 = 0x02;
+
+/// One decoded event from the wire.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// A tag=0x01 block, expanded into raw `(pa, pb)` samples.
+    Block(Vec<(u16, u16)>),
+    /// A tag=0x02 run: `n` repetitions of `(pa, pb)`.
+    Run { n: u8, pa: u16, pb: u16 },
+    /// A tag=0xFD overrun marker: firmware lost `dropped` WR edges.
+    Overrun { dropped: u32 },
+    /// A tag=0xFE log frame: a UTF-8 line from the firmware.
+    Log(String),
+    /// `[0xFB]` — firmware acknowledged START.
+    Started,
+    /// `[0xFC]` — firmware acknowledged STOP.
+    Stopped,
 }
 
-/// Read one frame from `r`. Re-syncs by scanning for the magic prefix.
-/// RLE-encoded frames are expanded into raw pixel words before return,
-/// so downstream code sees a uniform `data: Vec<u16>` payload either way.
-pub fn read_frame<R: Read>(r: &mut R) -> io::Result<Frame> {
-    // Find the magic.
-    let mut prev = 0u8;
-    let mut byte = [0u8; 1];
-    loop {
-        r.read_exact(&mut byte)?;
-        if prev == MAGIC_0 && byte[0] == MAGIC_1 {
-            break;
-        }
-        prev = byte[0];
+/// Incremental wire-format decoder.
+#[derive(Default)]
+pub struct Decoder {
+    buf: Vec<u8>,
+}
+
+impl Decoder {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    let mut cmd_buf = [0u8; 1];
-    r.read_exact(&mut cmd_buf)?;
-    let cmd = cmd_buf[0];
-
-    let mut count_buf = [0u8; 2];
-    r.read_exact(&mut count_buf)?;
-    let count_raw = u16::from_le_bytes(count_buf);
-    let is_rle = count_raw & RLE_FLAG != 0;
-    let count = (count_raw & COUNT_MASK) as usize;
-
-    let mut raw = Vec::with_capacity(count);
-    let mut word_buf = [0u8; 2];
-    for _ in 0..count {
-        r.read_exact(&mut word_buf)?;
-        raw.push(u16::from_le_bytes(word_buf));
+    /// Append `bytes` and drain whatever complete frames are now available.
+    /// Returns `Err` on an unrecognised tag — the caller should resync.
+    pub fn feed(&mut self, bytes: &[u8]) -> io::Result<Vec<Event>> {
+        self.buf.extend_from_slice(bytes);
+        let mut events = Vec::new();
+        let mut consumed = 0usize;
+        loop {
+            let rest = &self.buf[consumed..];
+            match parse_one(rest)? {
+                Some((ev, n)) => {
+                    events.push(ev);
+                    consumed += n;
+                }
+                None => break,
+            }
+        }
+        if consumed > 0 {
+            self.buf.drain(..consumed);
+        }
+        Ok(events)
     }
 
-    let data = if is_rle {
-        let mut out = Vec::new();
-        for pair in raw.chunks_exact(2) {
-            let len = pair[0] as usize;
-            let value = pair[1];
-            out.resize(out.len() + len, value);
-        }
-        out
-    } else {
-        raw
+}
+
+/// Try to parse one frame from `buf`. Returns `Ok(Some((ev, n)))` with
+/// the event and bytes consumed, `Ok(None)` if the buffer doesn't yet
+/// hold a full frame, or `Err` if the leading byte isn't a valid tag.
+fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
+    let Some(&tag) = buf.first() else {
+        return Ok(None);
     };
-
-    Ok(Frame { cmd, data })
-}
-
-/// Decode a CMD_LOG frame's data as a UTF-8 string.
-pub fn log_text(data: &[u16]) -> String {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for &w in data {
-        let b = w.to_le_bytes();
-        bytes.push(b[0]);
-        bytes.push(b[1]);
+    match tag {
+        TAG_BLOCK => {
+            if buf.len() < 2 {
+                return Ok(None);
+            }
+            let n = buf[1] as usize;
+            let needed = 2 + 4 * n;
+            if buf.len() < needed {
+                return Ok(None);
+            }
+            let mut samples = Vec::with_capacity(n);
+            for i in 0..n {
+                let off = 2 + 4 * i;
+                let pa = u16::from_le_bytes([buf[off], buf[off + 1]]);
+                let pb = u16::from_le_bytes([buf[off + 2], buf[off + 3]]);
+                samples.push((pa, pb));
+            }
+            Ok(Some((Event::Block(samples), needed)))
+        }
+        TAG_RUN => {
+            if buf.len() < 6 {
+                return Ok(None);
+            }
+            let n = buf[1];
+            let pa = u16::from_le_bytes([buf[2], buf[3]]);
+            let pb = u16::from_le_bytes([buf[4], buf[5]]);
+            Ok(Some((Event::Run { n, pa, pb }, 6)))
+        }
+        TAG_OVERRUN => {
+            if buf.len() < 5 {
+                return Ok(None);
+            }
+            let dropped = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+            Ok(Some((Event::Overrun { dropped }, 5)))
+        }
+        TAG_LOG => {
+            if buf.len() < 3 {
+                return Ok(None);
+            }
+            let len = u16::from_le_bytes([buf[1], buf[2]]) as usize;
+            let needed = 3 + len;
+            if buf.len() < needed {
+                return Ok(None);
+            }
+            let msg = String::from_utf8_lossy(&buf[3..needed]).into_owned();
+            Ok(Some((Event::Log(msg), needed)))
+        }
+        TAG_STARTED => Ok(Some((Event::Started, 1))),
+        TAG_STOPPED => Ok(Some((Event::Stopped, 1))),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unrecognised wire tag {other:#04x}"),
+        )),
     }
-    // Strip trailing zeros (padding from odd-length original messages).
-    while bytes.last() == Some(&0) {
-        bytes.pop();
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
 }
