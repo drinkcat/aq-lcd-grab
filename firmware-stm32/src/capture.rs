@@ -32,13 +32,22 @@ use embassy_stm32::Peri;
 /// this mask are noise (floating inputs, other peripherals) and must
 /// be zeroed before RLE so they don't break runs.
 ///
-/// Suggested allocation from pcb_spec.md: PA0..PA7 = data low byte.
-/// Update this constant when the netlist permutation is finalised.
+/// Final routing (see pcb/aq_lcd_grab.kicad_sch):
+///   PA0..PA7  = DB0..DB7
+///   PA12      = WR (read by TIM1 via ETR, not part of the data sample)
+/// All other PA bits are unused; mask them off so noise on floating
+/// inputs doesn't break RLE runs.
 pub const PA_MASK: u16 = 0x00FF;
 
-/// Mask of PB bits that are wired to the display flex. Suggested:
-/// PB0=DC, PB1=CS, PB8..PB15 = data high byte.
-pub const PB_MASK: u16 = 0xFF03;
+/// Final routing:
+///   PB0..PB1  = DB8..DB9
+///   PB2       = not exposed on the F103C8 package
+///   PB3..PB8  = DB10..DB15
+///   PB9       = unused
+///   PB10      = DC
+///   PB11      = CS
+/// Host permute layer re-orders these into logical (data, dc, cs).
+pub const PB_MASK: u16 = 0x0CFB;
 
 /// Capture pin set. The data pins themselves don't need typed handles
 /// (we read GPIOA->IDR/GPIOB->IDR as whole ports), but PA12 must be held

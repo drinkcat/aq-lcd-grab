@@ -13,7 +13,6 @@ use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embedded_io_async::{Read, Write};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use panic_halt as _;
 
@@ -31,14 +30,28 @@ const TX_QUEUE_CAP: usize = 4096;
 type TxQueue = Channel<ThreadModeRawMutex, u8, TX_QUEUE_CAP>;
 static TX_QUEUE: TxQueue = Channel::new();
 
-/// Stream control: STOPPED → STREAMING and back. Signaled by RX task,
-/// observed by capture task.
-static STATE: Signal<ThreadModeRawMutex, StreamState> = Signal::new();
+/// Commands from RX task to capture task. The protocol mandates an ack
+/// for every START/STOP — even when it's a no-op for the current
+/// state — so we route each command through a FIFO instead of a
+/// one-slot Signal. 8 slots is plenty: commands are rare and the
+/// capture task drains them every polling tick.
+type CmdQueue = Channel<ThreadModeRawMutex, HostCmd, 8>;
+static CMD_QUEUE: CmdQueue = Channel::new();
+
+/// Shared "we are streaming" flag for the LED task. Updated by the
+/// capture task on state transitions; only read by the LED.
+static STREAMING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum StreamState {
     Stopped,
     Streaming,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum HostCmd {
+    Start,
+    Stop,
 }
 
 /// `Sink` impl that pushes into the TX queue, dropping bytes if full.
@@ -129,8 +142,6 @@ async fn main(_spawner: Spawner) {
         pb_buf,
     );
 
-    // Initial state.
-    STATE.signal(StreamState::Stopped);
     let mut encoder = Encoder::default();
     let mut sink = QueueSink { dropped: 0 };
     wire::encode_log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
@@ -138,9 +149,10 @@ async fn main(_spawner: Spawner) {
     // LED task — visual liveness, also signals state.
     let led_fut = async {
         loop {
-            let interval = match STATE.try_take().unwrap_or(StreamState::Stopped) {
-                StreamState::Stopped => 500,
-                StreamState::Streaming => 100,
+            let interval = if STREAMING.load(core::sync::atomic::Ordering::Relaxed) {
+                100
+            } else {
+                500
             };
             led.toggle();
             Timer::after_millis(interval).await;
@@ -177,11 +189,12 @@ async fn main(_spawner: Spawner) {
             if <_ as Read>::read(&mut rx, &mut byte).await.is_err() {
                 continue;
             }
-            match byte[0] {
-                HOST_CMD_START => STATE.signal(StreamState::Streaming),
-                HOST_CMD_STOP => STATE.signal(StreamState::Stopped),
-                _ => {} // unknown command, ignore
-            }
+            let cmd = match byte[0] {
+                HOST_CMD_START => HostCmd::Start,
+                HOST_CMD_STOP => HostCmd::Stop,
+                _ => continue, // unknown command, ignore
+            };
+            CMD_QUEUE.send(cmd).await;
         }
     };
 
@@ -193,22 +206,27 @@ async fn main(_spawner: Spawner) {
         let mut pb_buf = [0u16; DRAIN_CHUNK];
         let mut idle_ticks: u32 = 0;
         loop {
-            // Apply any pending state change.
-            if let Some(new_state) = STATE.try_take() {
-                if new_state != state {
-                    match new_state {
-                        StreamState::Streaming => {
+            // Drain all pending host commands. Every START/STOP gets an
+            // ack even when it's a no-op for the current state — the
+            // host's sync handshake assumes STOP always produces FC.
+            while let Ok(cmd) = CMD_QUEUE.try_receive() {
+                match cmd {
+                    HostCmd::Start => {
+                        if state == StreamState::Stopped {
                             encoder.reset();
-                            wire::encode_started(&mut sink);
+                            state = StreamState::Streaming;
+                            STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
                         }
-                        StreamState::Stopped => {
-                            encoder.flush(&mut sink);
-                            wire::encode_stopped(&mut sink);
-                        }
+                        wire::encode_started(&mut sink);
                     }
-                    state = new_state;
-                    // Re-arm the signal for next observation.
-                    STATE.signal(new_state);
+                    HostCmd::Stop => {
+                        if state == StreamState::Streaming {
+                            encoder.flush(&mut sink);
+                            state = StreamState::Stopped;
+                            STREAMING.store(false, core::sync::atomic::Ordering::Relaxed);
+                        }
+                        wire::encode_stopped(&mut sink);
+                    }
                 }
             }
 
@@ -218,7 +236,12 @@ async fn main(_spawner: Spawner) {
 
             if n > 0 && state == StreamState::Streaming {
                 for i in 0..n {
-                    encoder.feed(pa_buf[i], pb_buf[i], &mut sink);
+                    // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
+                    // Packing into one u32 matches the on-wire LE byte
+                    // layout exactly; the host's permute layer
+                    // unpacks them per-board.
+                    let sample = pa_buf[i] as u32 | (pb_buf[i] as u32) << 16;
+                    encoder.feed(sample, &mut sink);
                 }
                 // Flush block/run on each drain cycle so latency is
                 // bounded by the drain period, not by waiting for a
@@ -234,6 +257,13 @@ async fn main(_spawner: Spawner) {
                 // not interesting.
                 let _ = capture.take_dropped();
             }
+
+            // Always yield once per outer iteration. With ETR=PA12
+            // floating on a bench rig (no real WR signal), the timer
+            // picks up enough noise that `capture.drain` always returns
+            // samples and the inner loop never sleeps — without this
+            // yield, the LED/RX/TX tasks would never get scheduled.
+            embassy_futures::yield_now().await;
 
             if n == 0 {
                 idle_ticks = idle_ticks.wrapping_add(1);
