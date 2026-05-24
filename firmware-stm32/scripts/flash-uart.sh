@@ -5,12 +5,8 @@
 #   adapter TX  -> STM32 PA10 (USART1 RX)
 #   adapter RX  -> STM32 PA9  (USART1 TX)
 #   adapter GND -> STM32 GND
-#   STM32 BOOT0 -> 3V3 (enter ROM bootloader), then pulse NRST low.
-#
-# After flashing, return BOOT0 low and pulse NRST again to boot user
-# firmware. stm32flash's `-g 0x08000000` triggers a "go" jump instead
-# of a reset (no NRST line on a plain USB-UART), but a manual reset
-# after pulling BOOT0 low is the most reliable.
+#   adapter DTR -[1k]-> STM32 BOOT0 (internal pull-down holds it low at idle)
+#   adapter RTS -[1k]-> STM32 NRST  (internal pull-up holds it high at idle)
 #
 # Override port via STM32FLASH_PORT, baud via STM32FLASH_BAUD.
 
@@ -47,5 +43,16 @@ fi
 SIZE=$(stat -c%s "$BIN")
 echo "flashing $BIN ($SIZE bytes) to $PORT @ ${BAUD} baud"
 
-# -w: write, -v: verify, -g 0x08000000: go (jump to user code after write).
-stm32flash -b "$BAUD" -w "$BIN" -v -g 0x08000000 "$PORT"
+# Entry sequence '-dtr,rts,-rts': drive BOOT0 high (DTR wire-low →
+# inverter → BOOT0 high), pulse NRST (RTS high → reset asserted → RTS
+# low → released). Chip comes up in ROM bootloader.
+#
+# Exit sequence 'dtr,rts,-rts': drop BOOT0 (DTR wire-high → BOOT0 low),
+# then pulse NRST so the chip resets out of bootloader into user code.
+# Without an explicit exit sequence, stm32flash leaves DTR at its
+# entry-sequence value (low → BOOT0 high) and `-R`'s software reset
+# bounces the chip right back into the bootloader.
+#
+# The leading '-' inverts the sense for FT232R TTL breakouts which
+# don't invert internally.
+stm32flash -b "$BAUD" -i '-dtr,rts,-rts:dtr,rts,-rts' -w "$BIN" -v "$PORT"
