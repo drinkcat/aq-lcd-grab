@@ -17,20 +17,25 @@ pub fn permute_pico(pa: u16, pb: u16) -> (u16, bool, bool) {
     (data, dc, cs)
 }
 
-/// F103 capture board layout (firmware-stm32/src/capture.rs):
-///   PA0..PA7   → DB0..DB7
+/// F103 capture board layout, Blue Pill bench rig (firmware-stm32/src/capture.rs):
+///   PA0        → WR (timer ETR, not part of the sample)
+///   PA1..PA7   → DB1..DB7
 ///   PB0..PB1   → DB8..DB9
-///   PB3..PB8   → DB10..DB15  (PB2 isn't exposed on the F103C8 package)
+///   PB5..PB8   → DB12..DB15
+///   PB9        → DB0  (relocated off PA0)
 ///   PB10       → DC
 ///   PB11       → CS
+///   PB12..PB13 → DB10..DB11  (moved off PB3/PB4 to dodge JTAG)
 ///
-/// The PA half maps straight through; the PB data bits are stretched
-/// across a 1-bit gap (PB2 is absent), so DB10..DB15 come from
-/// PB3..PB8.
+/// DB0 wraps around to the PB half, and DB10..DB11 sit above the
+/// control bits — so the PB→data extraction is in two non-contiguous
+/// groups.
 pub fn permute_f103(pa: u16, pb: u16) -> (u16, bool, bool) {
-    let data = (pa & 0x00FF)                    // DB0..DB7  ← PA0..PA7
-        | ((pb & 0x0003) << 8)                  // DB8..DB9  ← PB0..PB1
-        | (((pb >> 3) & 0x003F) << 10);         // DB10..DB15 ← PB3..PB8
+    let data = ((pb >> 9) & 0x0001)              // DB0        ← PB9
+        | (pa & 0x00FE)                          // DB1..DB7   ← PA1..PA7
+        | ((pb & 0x0003) << 8)                   // DB8..DB9   ← PB0..PB1
+        | (((pb >> 12) & 0x0003) << 10)          // DB10..DB11 ← PB12..PB13
+        | (((pb >> 5) & 0x000F) << 12);          // DB12..DB15 ← PB5..PB8
     let dc = pb & (1 << 10) != 0;
     let cs = pb & (1 << 11) != 0;
     (data, dc, cs)

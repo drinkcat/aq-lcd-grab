@@ -185,28 +185,34 @@ fn reader_loop(
                 .open()
                 .with_context(|| format!("opening serial port {port}"))?;
             // F103 wires DTR→BOOT0 and RTS→NRST through 1k resistors
-            // (see firmware-stm32/scripts/flash-uart.sh). Linux's tty
-            // open() defaults DTR and RTS both *asserted*, which on
-            // an FT232R TTL adapter drives those pins wire-low →
-            // BOOT0 high + NRST low → the chip reboots into the ROM
-            // bootloader on every viewer launch.
+            // (see firmware-stm32/scripts/flash-uart.sh). Without
+            // intervention, Linux's tty open() leaves these in a state
+            // that drops the chip into the ROM bootloader instead of
+            // user code, every time the viewer launches.
             //
-            // Deassert both immediately so the F103 stays in user
-            // code: DTR de-asserted = wire-high = BOOT0 low (run
-            // user app); RTS de-asserted = wire-high = NRST released.
-            // Harmless on USB-CDC boards (Pico) where DTR/RTS aren't
-            // wired to anything.
+            // Drive a clean "reset into user code" pulse:
+            //   DTR=true  → BOOT0 low (run user app)
+            //   RTS=true  → NRST low  (assert reset)
+            //   <20 ms>
+            //   RTS=false → NRST high (release reset, chip boots)
+            //
+            // The exact wire polarity depends on the FT232R EEPROM /
+            // adapter wiring (some clones invert, some don't); the
+            // values below are right for this rig. Harmless on
+            // USB-CDC boards (Pico) where DTR/RTS aren't wired to
+            // anything.
             port_handle
-                .write_data_terminal_ready(false)
-                .with_context(|| "deasserting DTR (BOOT0 low)")?;
+                .write_data_terminal_ready(true)
+                .with_context(|| "DTR=true (BOOT0 low → run user code)")?;
+            port_handle
+                .write_request_to_send(true)
+                .with_context(|| "RTS=true (NRST low → reset asserted)")?;
+            std::thread::sleep(Duration::from_millis(20));
             port_handle
                 .write_request_to_send(false)
-                .with_context(|| "deasserting RTS (NRST released)")?;
-            // The kernel briefly asserts DTR/RTS during open() before we
-            // get a chance to clamp them, which can be just enough to
-            // bounce the chip into the bootloader. Give the F103 a
-            // moment to settle back into user code before we start the
-            // STOP/START handshake.
+                .with_context(|| "RTS=false (NRST released)")?;
+            // Give the F103 a moment to boot its firmware before we
+            // start the STOP/START handshake.
             std::thread::sleep(Duration::from_millis(250));
             let writer = port_handle
                 .try_clone()
@@ -348,6 +354,13 @@ fn sync(reader: &mut (dyn Read + Send), writer: &mut (dyn Write + Send)) -> anyh
 }
 
 /// Read bytes until `target` shows up. Discards anything before it.
+///
+/// TODO(host-sync): this also discards anything *after* the target in
+/// the same `read()` call. If the firmware emits a STARTED ack
+/// immediately followed by other frames (e.g. a log line), those frames
+/// get silently eaten when they land in the same packet as the ack.
+/// Fix: return the unconsumed tail and prepend it to the wire decoder's
+/// buffer before entering the main loop.
 fn scan_for(reader: &mut (dyn Read + Send), target: u8, what: &str) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut buf = [0u8; 256];
