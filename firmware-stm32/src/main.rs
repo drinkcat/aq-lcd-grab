@@ -108,10 +108,10 @@ async fn main(_spawner: Spawner) {
 
     // USART1 @ 921600. We use BufferedUart (interrupt-driven, no DMA)
     // because USART1_RX's default DMA channel is DMA1_CH5 — and we
-    // need Ch5 for TIM1_UP. Interrupt-driven RX is fine: host commands
-    // are single-byte and rare. TX is also interrupt-driven; at 921600
-    // baud the ~10 µs ISR cadence is well below the 64 MHz CPU's
-    // critical-path budget.
+    // need Ch5 for TIM2_CH1 capture. Interrupt-driven RX is fine: host
+    // commands are single-byte and rare. TX is also interrupt-driven;
+    // at 921600 baud the ~10 µs ISR cadence is well below the 64 MHz
+    // CPU's critical-path budget.
     static mut UART_TX_BUF: [u8; 4096] = [0; 4096];
     static mut UART_RX_BUF: [u8; 64] = [0; 64];
     let (tx_buf, rx_buf) = unsafe {
@@ -134,10 +134,10 @@ async fn main(_spawner: Spawner) {
         )
     };
     let mut capture = Capture::new(
-        p.TIM1,
-        CapturePins { wr_etr: p.PA12 },
-        p.DMA1_CH2, // TIM1_CH1 -> PA ring
-        p.DMA1_CH5, // TIM1_UP  -> PB ring
+        p.TIM2,
+        CapturePins { wr_etr: p.PA0 },
+        p.DMA1_CH5, // TIM2_CH1 -> PA ring
+        p.DMA1_CH2, // TIM2_UP  -> PB ring
         pa_buf,
         pb_buf,
     );
@@ -218,6 +218,18 @@ async fn main(_spawner: Spawner) {
                             STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
                         }
                         wire::encode_started(&mut sink);
+                        // DEBUG: delay then dump SMCR/CR1/DIER/MAPR.
+                        // The host's sync `scan_for` reads up to 256
+                        // bytes looking for 0xFB and discards the
+                        // tail; sleep so we fall on the other side of
+                        // that read.
+                        Timer::after_millis(100).await;
+                        let (smcr, cr1) = capture.peek_smcr_cr1();
+                        let dier = capture.peek_dier();
+                        let mapr = capture.peek_afio_mapr();
+                        let mut buf = [0u8; 64];
+                        let msg = fmt_regs4(&mut buf, smcr, cr1, dier, mapr);
+                        wire::encode_log(msg, &mut sink);
                     }
                     HostCmd::Stop => {
                         if state == StreamState::Streaming {
@@ -268,9 +280,14 @@ async fn main(_spawner: Spawner) {
             if n == 0 {
                 idle_ticks = idle_ticks.wrapping_add(1);
                 if idle_ticks.is_multiple_of(2500) {
-                    // ~5 s heartbeat when idle; useful sign-of-life.
+                    // ~5 s heartbeat when idle. Include TIM2->CNT so
+                    // we can tell "no edges arriving" from "edges
+                    // arrive but DMA isn't moving them."
                     if state == StreamState::Streaming {
-                        wire::encode_log("idle", &mut sink);
+                        let cnt = capture.peek_cnt();
+                        let mut buf = [0u8; 16];
+                        let msg = fmt_idle(&mut buf, cnt);
+                        wire::encode_log(msg, &mut sink);
                     }
                 }
                 Timer::after_millis(2).await;
@@ -281,4 +298,67 @@ async fn main(_spawner: Spawner) {
     };
 
     join(join3(led_fut, tx_fut, rx_fut), cap_fut).await;
+}
+
+/// Format a u16 as `"idle cnt=XXXX"` into `buf` and return a &str.
+/// `buf` must be at least 14 bytes.
+fn fmt_idle(buf: &mut [u8], cnt: u16) -> &str {
+    const PREFIX: &[u8] = b"idle cnt=";
+    buf[..PREFIX.len()].copy_from_slice(PREFIX);
+    for i in 0..4 {
+        let nibble = (cnt >> (12 - 4 * i)) & 0xF;
+        buf[PREFIX.len() + i] = if nibble < 10 {
+            b'0' + nibble as u8
+        } else {
+            b'a' + (nibble - 10) as u8
+        };
+    }
+    core::str::from_utf8(&buf[..PREFIX.len() + 4]).unwrap()
+}
+
+/// Format `"smcr=XXXXXXXX cr1=XXXXXXXX"` into `buf` and return a &str.
+/// `buf` must be at least 30 bytes.
+fn fmt_regs(buf: &mut [u8], smcr: u32, cr1: u32) -> &str {
+    let mut pos = 0;
+    pos += write_label(&mut buf[pos..], b"smcr=", smcr);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label(&mut buf[pos..], b"cr1=", cr1);
+    core::str::from_utf8(&buf[..pos]).unwrap()
+}
+
+/// Like fmt_regs but also includes DIER.
+fn fmt_regs3(buf: &mut [u8], smcr: u32, cr1: u32, dier: u32) -> &str {
+    let mut pos = 0;
+    pos += write_label(&mut buf[pos..], b"smcr=", smcr);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label(&mut buf[pos..], b"cr1=", cr1);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label(&mut buf[pos..], b"dier=", dier);
+    core::str::from_utf8(&buf[..pos]).unwrap()
+}
+
+/// fmt_regs3 + AFIO MAPR.
+fn fmt_regs4(buf: &mut [u8], smcr: u32, cr1: u32, dier: u32, mapr: u32) -> &str {
+    let mut pos = 0;
+    pos += write_label(&mut buf[pos..], b"smcr=", smcr);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label(&mut buf[pos..], b"cr1=", cr1);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label(&mut buf[pos..], b"dier=", dier);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label(&mut buf[pos..], b"mapr=", mapr);
+    core::str::from_utf8(&buf[..pos]).unwrap()
+}
+
+fn write_label(buf: &mut [u8], label: &[u8], val: u32) -> usize {
+    buf[..label.len()].copy_from_slice(label);
+    for i in 0..8 {
+        let nibble = (val >> (28 - 4 * i)) & 0xF;
+        buf[label.len() + i] = if nibble < 10 {
+            b'0' + nibble as u8
+        } else {
+            b'a' + (nibble - 10) as u8
+        };
+    }
+    label.len() + 8
 }

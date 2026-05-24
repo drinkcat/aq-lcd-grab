@@ -1,14 +1,21 @@
-//! TIM1 + dual-DMA capture of the 8080 display bus.
+//! TIM2 + dual-DMA capture of the 8080 display bus.
 //!
-//! Per `docs/pcb_spec.md` §"Capture mechanism": TIM1 in external clock
-//! mode 2 (ECE=1 in SMCR) is clocked by ETR=PA12=WR. With ARR=0, every
-//! ETR edge produces an update event (UEV) and — via a CC1 channel in
-//! output-compare with CCR=0 — a CC1 compare-match event on the same
-//! cycle. Each event has an independent DMA request line (UDE, CC1DE)
-//! enabled in DIER, so two DMA channels can fire from a single WR edge:
+//! Per `docs/pcb_spec.md` §"Capture mechanism": the capture timer runs
+//! in external clock mode 2 (ECE=1 in SMCR), clocked by ETR=WR. With
+//! ARR=0, every ETR edge produces an update event (UEV) and — via a
+//! CC1 channel in output-compare with CCR=0 — a CC1 compare-match
+//! event on the same cycle. Each event has an independent DMA request
+//! line (UDE, CC1DE) enabled in DIER, so two DMA channels fire from a
+//! single WR edge.
 //!
-//!   TIM1_UP  → DMA1 Ch5 → reads `GPIOB->IDR` → PB ring
-//!   TIM1_CH1 → DMA1 Ch2 → reads `GPIOA->IDR` → PA ring
+//! On Blue Pill bring-up boards we use **TIM2 (ETR=PA0)** rather than
+//! TIM1 (ETR=PA12), because the Blue Pill ties PA12 to 3V3 through a
+//! 1.5 kΩ USB-DP pull-up that distorts an externally driven WR signal.
+//! The fab'd capture-board PCB has no such pull and can go back to
+//! TIM1/PA12 once it's brought up.
+//!
+//!   TIM2_UP  → DMA1 Ch2 → reads `GPIOB->IDR` → PB ring
+//!   TIM2_CH1 → DMA1 Ch5 → reads `GPIOA->IDR` → PA ring
 //!
 //! Both channels are configured peripheral→memory, no peripheral increment,
 //! memory increment, half-word size, circular.
@@ -23,7 +30,7 @@
 use embassy_stm32::dma::{ReadableRingBuffer, TransferOptions};
 use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::pac;
-use embassy_stm32::peripherals::{PA12, TIM1};
+use embassy_stm32::peripherals::{PA0, TIM2};
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::timer::{Ch1, Dma as TimDma, UpDma};
 use embassy_stm32::Peri;
@@ -32,38 +39,40 @@ use embassy_stm32::Peri;
 /// this mask are noise (floating inputs, other peripherals) and must
 /// be zeroed before RLE so they don't break runs.
 ///
-/// Final routing (see pcb/aq_lcd_grab.kicad_sch):
-///   PA0..PA7  = DB0..DB7
-///   PA12      = WR (read by TIM1 via ETR, not part of the data sample)
-/// All other PA bits are unused; mask them off so noise on floating
-/// inputs doesn't break RLE runs.
-pub const PA_MASK: u16 = 0x00FF;
+/// Blue Pill bench routing:
+///   PA0       = WR (TIM2 ETR; not part of the data sample)
+///   PA1..PA7  = DB1..DB7  (DB0 moved off PA0 to PB9 — see PB_MASK)
+/// All other PA bits are unused.
+pub const PA_MASK: u16 = 0x00FE;
 
-/// Final routing:
-///   PB0..PB1  = DB8..DB9
-///   PB2       = not exposed on the F103C8 package
-///   PB3..PB8  = DB10..DB15
-///   PB9       = unused
-///   PB10      = DC
-///   PB11      = CS
+/// Blue Pill bench routing:
+///   PB0..PB1   = DB8..DB9
+///   PB2        = not exposed on the F103C8 package
+///   PB3, PB4   = JTAG TDO / NJTRST at reset; skipped so we don't have
+///                to fiddle with AFIO SWJ_CFG
+///   PB5..PB8   = DB12..DB15
+///   PB9        = DB0 (relocated here because PA0 became WR/ETR)
+///   PB10       = DC
+///   PB11       = CS
+///   PB12, PB13 = DB10, DB11 (moved off PB3/PB4 to dodge JTAG)
 /// Host permute layer re-orders these into logical (data, dc, cs).
-pub const PB_MASK: u16 = 0x0CFB;
+pub const PB_MASK: u16 = 0x3FE3;
 
 /// Capture pin set. The data pins themselves don't need typed handles
-/// (we read GPIOA->IDR/GPIOB->IDR as whole ports), but PA12 must be held
+/// (we read GPIOA->IDR/GPIOB->IDR as whole ports), but PA0 must be held
 /// as input so nothing else claims it as an output.
 pub struct CapturePins<'d> {
-    pub wr_etr: Peri<'d, PA12>,
+    pub wr_etr: Peri<'d, PA0>,
     // Data + control pins are read via GPIOA/B->IDR directly; they just
     // need to be configured as floating inputs somewhere. Caller passes
     // them as a tuple-of-Inputs so we hold the borrow for safety.
     // (Empty tuple is acceptable on Blue Pill bench rigs that just feed
-    // PA12 with a square-wave generator and don't care about data.)
+    // PA0 with a square-wave generator and don't care about data.)
 }
 
 pub struct Capture<'d> {
     _wr: Input<'d>,
-    _tim: Timer<'d, TIM1>,
+    _tim: Timer<'d, TIM2>,
     pa_ring: ReadableRingBuffer<'d, u16>,
     pb_ring: ReadableRingBuffer<'d, u16>,
     /// Saturating counter of samples lost to ring overrun.
@@ -75,10 +84,10 @@ impl<'d> Capture<'d> {
     /// **the same length**. Embassy's circular DMA mode requires a
     /// power-of-2 length; matching lengths simplify the pairing logic.
     pub fn new(
-        tim: Peri<'d, TIM1>,
+        tim: Peri<'d, TIM2>,
         pins: CapturePins<'d>,
-        pa_dma: Peri<'d, impl TimDma<TIM1, Ch1>>,
-        pb_dma: Peri<'d, impl UpDma<TIM1>>,
+        pa_dma: Peri<'d, impl TimDma<TIM2, Ch1>>,
+        pb_dma: Peri<'d, impl UpDma<TIM2>>,
         pa_buf: &'d mut [u16],
         pb_buf: &'d mut [u16],
     ) -> Self {
@@ -112,12 +121,13 @@ impl<'d> Capture<'d> {
             ReadableRingBuffer::new(pb_dma, pb_req, gpiob_idr, pb_buf, opts)
         };
 
-        // TIM1 setup. Use the low-level Timer wrapper to handle RCC
+        // TIM2 setup. Use the low-level Timer wrapper to handle RCC
         // gating; do the slave-mode + DMA-enable register writes by hand
-        // through regs_advanced() because the high-level API doesn't
-        // expose ECE / dual-DMA-event mode.
+        // through regs_gp16() because the high-level API doesn't expose
+        // ECE / dual-DMA-event mode. (TIM2 is a general-purpose 16-bit
+        // timer, so we use regs_gp16 instead of TIM1's regs_advanced.)
         let tim = Timer::new(tim);
-        let r = tim.regs_advanced();
+        let r = tim.regs_gp16();
 
         // Stop the counter while we reconfigure.
         r.cr1().modify(|w| w.set_cen(false));
@@ -140,15 +150,25 @@ impl<'d> Capture<'d> {
         r.psc().write_value(0);
         r.cnt().write(|w| w.set_cnt(0));
 
-        // CC1 = output compare, CCR1=0 → compare-match on every cycle,
-        // same edge as UEV. We don't need a physical output, just the
-        // DMA request, so we configure CCMR1 in output mode and leave
-        // CCER.CC1E=0.
-        r.ccmr_output(0).modify(|w| {
-            w.set_ccs(0, pac::timer::vals::CcmrOutputCcs::OUTPUT);
-            w.set_ocm(0, pac::timer::vals::Ocm::FROZEN);
+        // CC1 = input capture from TI1 (same pin as ETR — on TIM2 the
+        // pin is multiplexed as CH1_ETR, and both functions are
+        // *inputs* of the same pin, so this works alongside ECE).
+        // Capture on every rising edge → CC1IF set → CC1DE fires the
+        // second DMA channel.
+        //
+        // We tried CC1 in output-compare mode with CCR=0 to get a
+        // "match on every count" event, but with ARR=0 the counter
+        // never transitions into the match, so CC1IF never fires.
+        // Input capture has no such gotcha.
+        r.ccmr_input(0).modify(|w| {
+            w.set_ccs(0, pac::timer::vals::CcmrInputCcs::TI4); // = 0b01: CC1 ← TI1
+            w.set_icf(0, pac::timer::vals::FilterValue::NO_FILTER);
+            w.set_icpsc(0, 0); // no prescaler
         });
-        r.ccr(0).write(|w| w.set_ccr(0));
+        r.ccer().modify(|w| {
+            w.set_ccp(0, false); // rising edge
+            w.set_cce(0, true);  // enable capture
+        });
 
         // Enable both DMA request lines.
         r.dier().modify(|w| {
@@ -247,5 +267,31 @@ impl<'d> Capture<'d> {
     /// Take + reset the dropped-samples counter.
     pub fn take_dropped(&mut self) -> u32 {
         core::mem::replace(&mut self.dropped, 0)
+    }
+
+    /// Read TIM2's current counter value. Useful as a sign-of-life
+    /// check: if this isn't incrementing, ETR isn't seeing WR edges.
+    pub fn peek_cnt(&self) -> u16 {
+        self._tim.regs_gp16().cnt().read().cnt()
+    }
+
+    /// DEBUG: read SMCR (slave-mode control) and CR1 (control 1) raw.
+    /// SMCR should have ECE=1 (bit 14). CR1 should have CEN=1 (bit 0).
+    pub fn peek_smcr_cr1(&self) -> (u32, u32) {
+        let smcr = self._tim.regs_gp16().smcr().read().0;
+        let cr1 = self._tim.regs_gp16().cr1().read().0;
+        (smcr, cr1)
+    }
+
+    /// DEBUG: read DIER (DMA enable). Should have UDE bit 8 set and
+    /// CC1DE bit 9 set, both = 1.
+    pub fn peek_dier(&self) -> u32 {
+        self._tim.regs_gp16().dier().read().0
+    }
+
+    /// DEBUG: read AFIO->MAPR. TIM2_REMAP is bits 9:8, should be 00
+    /// for our ETR=PA0 routing. Anything else means ETR is not on PA0.
+    pub fn peek_afio_mapr(&self) -> u32 {
+        pac::AFIO.mapr().read().0
     }
 }
