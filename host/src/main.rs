@@ -13,11 +13,29 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use eframe::egui;
 use bus_decoder::{BusDecoder, Frame};
 use framebuffer::{Framebuffer, WindowWrite};
 use wire::{Decoder as WireDecoder, Event, HOST_CMD_START, HOST_CMD_STOP};
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum Board {
+    /// Pico 2 W (USB CDC, GPIO0..15 = DB0..15, GPIO16=DC, GPIO17=CS).
+    Pico,
+    /// F103 capture board (UART, PA0..7=DB0..7, PB0..1/PB3..8=DB8..15,
+    /// PB10=DC, PB11=CS).
+    F103,
+}
+
+impl Board {
+    fn permute(self, pa: u16, pb: u16) -> (u16, bool, bool) {
+        match self {
+            Board::Pico => permute::permute_pico(pa, pb),
+            Board::F103 => permute::permute_f103(pa, pb),
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Live viewer for the aq-lcd-grab firmware capture stream")]
@@ -25,6 +43,11 @@ struct Args {
     /// Serial device the firmware is logging on.
     #[arg(short, long, default_value = "/dev/ttyACM0")]
     port: String,
+
+    /// Which capture board is on the other end. Picks the permutation
+    /// from raw (pa, pb) port reads back to logical (data, dc, cs).
+    #[arg(short, long, value_enum, default_value_t = Board::Pico)]
+    board: Board,
 
     /// Optional file to replay (skips opening the serial port).
     /// Raw binary frames as emitted by the firmware.
@@ -118,8 +141,9 @@ fn main() -> anyhow::Result<()> {
     let port = args.port.clone();
     let replay = args.replay.clone();
     let dump_dir = args.dump_dir.clone();
+    let board = args.board;
     thread::spawn(move || {
-        if let Err(e) = reader_loop(port, replay, dump_dir, reader_shared) {
+        if let Err(e) = reader_loop(port, board, replay, dump_dir, reader_shared) {
             eprintln!("reader thread exited: {e:#}");
         }
     });
@@ -143,6 +167,7 @@ fn main() -> anyhow::Result<()> {
 
 fn reader_loop(
     port: String,
+    board: Board,
     replay: Option<String>,
     dump_dir: Option<PathBuf>,
     shared: Arc<Mutex<Shared>>,
@@ -155,10 +180,34 @@ fn reader_loop(
             // Baud doesn't matter for the Pico (USB CDC ignores it) but
             // gives the right rate for UART-attached boards like the
             // F103.
-            let port_handle = serialport::new(&port, 921_600)
+            let mut port_handle = serialport::new(&port, 921_600)
                 .timeout(Duration::from_millis(250))
                 .open()
                 .with_context(|| format!("opening serial port {port}"))?;
+            // F103 wires DTR→BOOT0 and RTS→NRST through 1k resistors
+            // (see firmware-stm32/scripts/flash-uart.sh). Linux's tty
+            // open() defaults DTR and RTS both *asserted*, which on
+            // an FT232R TTL adapter drives those pins wire-low →
+            // BOOT0 high + NRST low → the chip reboots into the ROM
+            // bootloader on every viewer launch.
+            //
+            // Deassert both immediately so the F103 stays in user
+            // code: DTR de-asserted = wire-high = BOOT0 low (run
+            // user app); RTS de-asserted = wire-high = NRST released.
+            // Harmless on USB-CDC boards (Pico) where DTR/RTS aren't
+            // wired to anything.
+            port_handle
+                .write_data_terminal_ready(false)
+                .with_context(|| "deasserting DTR (BOOT0 low)")?;
+            port_handle
+                .write_request_to_send(false)
+                .with_context(|| "deasserting RTS (NRST released)")?;
+            // The kernel briefly asserts DTR/RTS during open() before we
+            // get a chance to clamp them, which can be just enough to
+            // bounce the chip into the bootloader. Give the F103 a
+            // moment to settle back into user code before we start the
+            // STOP/START handshake.
+            std::thread::sleep(Duration::from_millis(250));
             let writer = port_handle
                 .try_clone()
                 .with_context(|| "cloning serial handle for writer")?;
@@ -194,14 +243,14 @@ fn reader_loop(
             match ev {
                 Event::Block(samples) => {
                     for (pa, pb) in samples {
-                        let (data, dc, _cs) = permute::permute_pico(pa, pb);
+                        let (data, dc, _cs) = board.permute(pa, pb);
                         if let Some(tx) = bus.feed(data, dc) {
                             handle_frame(&mut g, &mut glyphs, dump_dir.as_deref(), &mut seen, tx);
                         }
                     }
                 }
                 Event::Run { n, pa, pb } => {
-                    let (data, dc, _cs) = permute::permute_pico(pa, pb);
+                    let (data, dc, _cs) = board.permute(pa, pb);
                     if let Some(tx) = bus.feed_run(n as usize, data, dc) {
                         handle_frame(&mut g, &mut glyphs, dump_dir.as_deref(), &mut seen, tx);
                     }
