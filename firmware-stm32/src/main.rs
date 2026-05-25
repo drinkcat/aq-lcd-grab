@@ -5,15 +5,15 @@ mod capture;
 mod wire;
 
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join3};
+use embassy_futures::join::join3;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::usart::{BufferedUart, Config as UsartConfig};
+use embassy_stm32::usart::{BufferedUart, BufferedUartTx, Config as UsartConfig};
 use embassy_stm32::usart::BufferedInterruptHandler;
 use embassy_stm32::{bind_interrupts, peripherals, Config};
-use embedded_io_async::{Read, Write};
+use embedded_io::Write as _;
+use embedded_io_async::Read;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_sync::pipe::Pipe;
 use embassy_time::Timer;
 use panic_halt as _;
 
@@ -23,19 +23,6 @@ use wire::{Encoder, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP, Sink};
 bind_interrupts!(struct Irqs {
     USART1 => BufferedInterruptHandler<peripherals::USART1>;
 });
-
-/// Outbound byte pipe (encoder → UART TX task). 2 KiB holds ~22 ms
-/// at the 921600-baud drain rate (≈92 kB/s) — plenty for the encoder
-/// to stage many small frames ahead of the wire.
-///
-/// `Pipe<u8>` instead of `Channel<u8>`: lets the sink push whole
-/// frames atomically via `try_write` (no per-byte locking) and lets
-/// the TX task read straight out of the pipe's internal buffer
-/// (`fill_buf` / `consume`) — no staging copy. The pipe lives on
-/// `main()`'s frame so we can `split()` it into a Reader (for the
-/// TX task) and Writer (for the sink).
-const TX_PIPE_CAP: usize = 2048;
-static TX_PIPE: Pipe<ThreadModeRawMutex, TX_PIPE_CAP> = Pipe::new();
 
 /// Commands from RX task to capture task. The protocol mandates an ack
 /// for every START/STOP — even when it's a no-op for the current
@@ -63,27 +50,34 @@ enum HostCmd {
 }
 
 /// `Sink` that stages each frame into a small scratch buffer, then
-/// atomically pushes the whole frame into the TX queue on
-/// `commit_frame()`. If the queue can't fit the frame, the whole frame
-/// is discarded — never a partial. Essential for wire-format integrity:
-/// a half-emitted frame would desync the host's parser.
+/// flushes the whole frame straight into the BufferedUart's TX ring
+/// on `commit_frame()`. Spins until the full frame is enqueued —
+/// `BufferedUartTx::blocking_write` short-writes when the ring is
+/// near-full, and a torn frame would desync the host's parser. At
+/// 921600 baud the longest frame (~264 B) drains in ~2.9 ms worst
+/// case, well under the DMA ring's headroom.
 ///
 /// Max frame size: with `wire::MAX_BLOCK = 16`, tag=0x01 with n=16
 /// → 2 + 4*16 = 66 B for data frames. LOG frames (tag=0xFE) can be
 /// up to 3 + 256 = 259 B for the longest log message. Round up to
 /// 264 for headroom — log frames are rare.
 const SINK_FRAME_MAX: usize = 264;
-struct QueueSink {
+struct UartSink<'a, 'd> {
+    tx: &'a mut BufferedUartTx<'d>,
     buf: [u8; SINK_FRAME_MAX],
     n: usize,
     overflowed: bool,
-    /// Total bytes discarded since boot.
+    /// Total bytes discarded since boot — only counts frames that
+    /// exceeded SINK_FRAME_MAX (a code bug). Once a frame is staged,
+    /// commit_frame spins until the UART ring accepts it, so the
+    /// wire never sees a partial.
     dropped: u32,
 }
 
-impl QueueSink {
-    const fn new() -> Self {
+impl<'a, 'd> UartSink<'a, 'd> {
+    fn new(tx: &'a mut BufferedUartTx<'d>) -> Self {
         Self {
+            tx,
             buf: [0; SINK_FRAME_MAX],
             n: 0,
             overflowed: false,
@@ -92,7 +86,7 @@ impl QueueSink {
     }
 }
 
-impl Sink for QueueSink {
+impl<'a, 'd> Sink for UartSink<'a, 'd> {
     fn push(&mut self, b: u8) -> bool {
         if self.n < self.buf.len() {
             self.buf[self.n] = b;
@@ -112,20 +106,19 @@ impl Sink for QueueSink {
             self.overflowed = false;
             return;
         }
-        // All-or-nothing: only enqueue when the whole frame fits, so
-        // the pipe never carries a torn frame.
-        if TX_PIPE.free_capacity() < frame_size {
-            self.dropped = self.dropped.saturating_add(frame_size as u32);
-            return;
-        }
-        // `try_write` can short-write near the ring's wrap point
-        // (returns the contiguous free region size). Loop until done —
-        // free_capacity was pre-checked so progress is guaranteed.
+        // Spin until the whole frame is in the UART TX ring. The
+        // `embedded_io::Write::write` impl on `BufferedUartTx` calls
+        // the inherent `blocking_write` (private), which short-writes
+        // when only part of the ring is free and busy-waits for the
+        // ISR to drain a byte (~10 µs at 921600 baud) when full. A
+        // torn write would desync the host's parser, so the loop must
+        // run to completion.
         let mut off = 0;
         while off < frame_size {
-            match TX_PIPE.try_write(&self.buf[off..frame_size]) {
+            match self.tx.write(&self.buf[off..frame_size]) {
+                Ok(0) => continue, // shouldn't happen — ring will drain
                 Ok(n) => off += n,
-                Err(_) => unreachable!("free_capacity was pre-checked"),
+                Err(_) => break, // UART error; host will reset us
             }
         }
     }
@@ -135,7 +128,7 @@ impl Sink for QueueSink {
 /// total. At 667 kHz peak, 2048 samples ≈ 3 ms of headroom — twice
 /// the original 1.5 ms and enough to ride out the drain-thread
 /// starvation we were hitting. Could go higher but F103C8 only has
-/// 20 KiB SRAM and we also need TX_PIPE + UART buffers.
+/// 20 KiB SRAM and we also need UART_TX_BUF.
 const RING_LEN: usize = 2048;
 static mut PA_BUF: [u16; RING_LEN] = [0; RING_LEN];
 static mut PB_BUF: [u16; RING_LEN] = [0; RING_LEN];
@@ -173,8 +166,9 @@ async fn main(_spawner: Spawner) {
     // need Ch5 for TIM2_CH1 capture. Interrupt-driven RX is fine: host
     // commands are single-byte and rare. TX is also interrupt-driven;
     // at 921600 baud the ~10 µs ISR cadence is well below the 64 MHz
-    // CPU's critical-path budget.
-    static mut UART_TX_BUF: [u8; 1024] = [0; 1024];
+    // CPU's critical-path budget. The TX ring is the only outbound
+    // buffer — the sink writes frames straight into it.
+    static mut UART_TX_BUF: [u8; 2048] = [0; 2048];
     static mut UART_RX_BUF: [u8; 64] = [0; 64];
     let (tx_buf, rx_buf) = unsafe {
         (
@@ -205,7 +199,7 @@ async fn main(_spawner: Spawner) {
     );
 
     let mut encoder = Encoder::default();
-    let mut sink = QueueSink::new();
+    let mut sink = UartSink::new(&mut tx);
     wire::encode_log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
 
     // LED task — visual liveness, also signals state.
@@ -218,38 +212,6 @@ async fn main(_spawner: Spawner) {
             };
             led.toggle();
             Timer::after_millis(interval).await;
-        }
-    };
-
-    // UART TX task — drains TX_PIPE out the wire.
-    //
-    // `Pipe::read` returns whatever's buffered, up to the slice size.
-    // We loop the BufferedUart `write` because it can short-write
-    // (returns just what fit in the interrupt-side TX ring);
-    // without the inner loop bytes would silently disappear and
-    // the host parser would desync.
-    //
-    // TODO: ditch this 64 B stack buf. Pipe → BufferedUart could be a
-    // direct zero-copy hand-off via `Reader::fill_buf` / `consume`
-    // — except that requires `Pipe::split()` (we need a Reader
-    // handle) and the sink-side capacity check needs
-    // `Pipe::free_capacity()` which isn't exposed on the Writer
-    // half, so the split halves don't compose with our atomic-frame
-    // invariant. Either upstream embassy_sync exposes free_capacity
-    // on the Writer, or we re-implement an atomic-frame pipe of our
-    // own. For now: one extra 64 B copy on the way out, ~negligible.
-    let tx_fut = async {
-        let mut buf = [0u8; 64];
-        loop {
-            let n = TX_PIPE.read(&mut buf).await;
-            let mut off = 0;
-            while off < n {
-                match <_ as Write>::write(&mut tx, &buf[off..n]).await {
-                    Ok(0) => break, // shouldn't happen, but don't spin
-                    Ok(w) => off += w,
-                    Err(_) => break, // UART error; host will reset us
-                }
-            }
         }
     };
 
@@ -339,8 +301,7 @@ async fn main(_spawner: Spawner) {
             }
 
             if n == 0 {
-                // Stupid Claude: it's commented
-                //encoder.flush(&mut sink);
+                encoder.flush(&mut sink);
             } else {
                 for i in 0..n {
                     // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
@@ -355,15 +316,6 @@ async fn main(_spawner: Spawner) {
                 if dropped > 0 {
                     wire::encode_overrun(dropped, &mut sink);
                 }
-            }
-
-            // If TX_PIPE is half-full or more, the UART task is
-            // falling behind. Yield so it can drain a chunk before
-            // we feed the encoder more samples — without this we
-            // can spin the cap loop hot, fill the pipe, and start
-            // dropping frames at commit_frame.
-            if TX_PIPE.len() >= TX_PIPE_CAP / 2 {
-                embassy_futures::yield_now().await;
             }
 
             // ~5 s diagnostic heartbeat while streaming. Dumps
@@ -397,7 +349,7 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-    join(join3(led_fut, tx_fut, rx_fut), cap_fut).await;
+    join3(led_fut, rx_fut, cap_fut).await;
 }
 
 /// Format `"cnt=XXXX pa_ndtr=XXXX pb_ndtr=XXXX"` into `buf` and
