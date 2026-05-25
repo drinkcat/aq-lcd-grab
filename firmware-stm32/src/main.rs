@@ -346,6 +346,13 @@ async fn main(_spawner: Spawner) {
                 wire::encode_log(msg, &mut sink);
                 last_stats = embassy_time::Instant::now();
             }
+
+            // Yield once per iteration so the LED + RX tasks get to
+            // run. `read_chunk` only awaits cooperatively when its
+            // ring lacks samples, and `commit_frame` busy-waits on
+            // the UART ring; without this yield the cap loop can
+            // monopolise the executor under sustained streaming.
+            embassy_futures::yield_now().await;
         }
     };
 
