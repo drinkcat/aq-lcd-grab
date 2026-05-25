@@ -76,11 +76,10 @@ impl<'a, 'd> Sink for UartSink<'a, 'd> {
     }
 }
 
-/// Capture ring lengths. 2048 half-words = 4 KiB per ring = 8 KiB
-/// total. At 667 kHz peak, 2048 samples ≈ 3 ms of headroom — twice
-/// the original 1.5 ms and enough to ride out the drain-thread
-/// starvation we were hitting. Could go higher but F103C8 only has
-/// 20 KiB SRAM and we also need UART_TX_BUF.
+/// Capture ring lengths. 4096 half-words = 8 KiB per ring = 16 KiB
+/// total. At 667 kHz peak, 4096 samples ≈ 6 ms of headroom for the
+/// drain task to keep up. Can't go higher: F103C8 has 20 KiB SRAM
+/// total and we still need UART_TX_BUF + stack + .bss.
 const RING_LEN: usize = 4096;
 static mut PA_BUF: [u16; RING_LEN] = [0; RING_LEN];
 static mut PB_BUF: [u16; RING_LEN] = [0; RING_LEN];
@@ -230,19 +229,16 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // In STOPPED state, nothing to capture. Just clear any
-            // accumulated drops and sleep a tick so we don't spin.
-            if state != StreamState::Streaming {
-                let _ = capture.take_dropped();
-                embassy_time::Timer::after_millis(10).await;
-                continue;
-            }
-
             // Wait until DMA has at least one paired sample (or a
             // 10 ms housekeeping timeout). `read_available` wakes on
             // the DMA half-/full-transfer IRQ and drains whatever's
             // there — no fixed batch wait. While we wait, the
             // executor parks us and runs LED/RX.
+            //
+            // On timeout, still do a sync `drain()` — samples may
+            // have landed in the rings but not yet crossed the
+            // N/2 wake mark. The IRQ won't fire for them; only a
+            // direct ring read can pick them up.
             let n = match embassy_futures::select::select(
                 capture.read_available(&mut pa_buf, &mut pb_buf),
                 embassy_time::Timer::after_millis(10),
@@ -250,8 +246,18 @@ async fn main(_spawner: Spawner) {
             .await
             {
                 embassy_futures::select::Either::First(n) => n,
-                embassy_futures::select::Either::Second(_) => 0,
+                embassy_futures::select::Either::Second(_) => {
+                    capture.drain(&mut pa_buf, &mut pb_buf)
+                }
             };
+
+            // In STOPPED state, nothing to capture. Just clear any
+            // accumulated drops and sleep a tick so we don't spin.
+            if state != StreamState::Streaming {
+                let _ = capture.take_dropped();
+                embassy_time::Timer::after_millis(1).await;
+                continue;
+            }
 
             if n == 0 {
                 // Idle bus — flush any partial encoder state so the
