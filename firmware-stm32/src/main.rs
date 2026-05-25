@@ -81,7 +81,7 @@ impl<'a, 'd> Sink for UartSink<'a, 'd> {
 /// the original 1.5 ms and enough to ride out the drain-thread
 /// starvation we were hitting. Could go higher but F103C8 only has
 /// 20 KiB SRAM and we also need UART_TX_BUF.
-const RING_LEN: usize = 2048;
+const RING_LEN: usize = 4096;
 static mut PA_BUF: [u16; RING_LEN] = [0; RING_LEN];
 static mut PB_BUF: [u16; RING_LEN] = [0; RING_LEN];
 
@@ -230,16 +230,6 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // Wait for the next chunk of samples (or 10 ms timeout).
-            // While we wait, the executor parks us and runs LED/RX/TX.
-            // Wake source: DMA half-/full-transfer IRQ via embassy's
-            // `read_exact`. On timeout we fall back to a best-effort
-            // sync drain so the housekeeping loop (commands, stats,
-            // heartbeat) still ticks during idle bus periods.
-            let n = capture
-                .read_chunk(&mut pa_buf, &mut pb_buf, embassy_time::Duration::from_millis(10))
-                .await;
-
             // In STOPPED state, nothing to capture. Just clear any
             // accumulated drops and sleep a tick so we don't spin.
             if state != StreamState::Streaming {
@@ -248,8 +238,33 @@ async fn main(_spawner: Spawner) {
                 continue;
             }
 
+            // Wait until DMA has at least one paired sample (or a
+            // 10 ms housekeeping timeout). `read_available` wakes on
+            // the DMA half-/full-transfer IRQ and drains whatever's
+            // there — no fixed batch wait. While we wait, the
+            // executor parks us and runs LED/RX.
+            let n = match embassy_futures::select::select(
+                capture.read_available(&mut pa_buf, &mut pb_buf),
+                embassy_time::Timer::after_millis(10),
+            )
+            .await
+            {
+                embassy_futures::select::Either::First(n) => n,
+                embassy_futures::select::Either::Second(_) => 0,
+            };
+
             if n == 0 {
+                // Idle bus — flush any partial encoder state so the
+                // host sees what we have, then run the heartbeat.
                 encoder.flush(&mut sink);
+
+                if last_idle_log.elapsed() >= embassy_time::Duration::from_secs(5) {
+                    let cnt = capture.peek_cnt();
+                    let (pa_ndtr, pb_ndtr) = capture.peek_dma_ndtr();
+                    let mut buf = [0u8; 48];
+                    let msg = fmt_idle3(&mut buf, cnt, pa_ndtr, pb_ndtr);
+                    wire::encode_log(msg, &mut sink);
+                }
             } else {
                 for i in 0..n {
                     // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
@@ -264,22 +279,6 @@ async fn main(_spawner: Spawner) {
                 if dropped > 0 {
                     wire::encode_overrun(dropped, &mut sink);
                 }
-            }
-
-            // ~5 s diagnostic heartbeat while streaming. Dumps
-            // TIM2->CNT and the DMA NDTRs — if CNT advances and
-            // NDTR decrements between ticks, ETR + DMA are firing
-            // correctly.
-            if n == 0 {
-                if last_idle_log.elapsed() >= embassy_time::Duration::from_secs(5) {
-                    let cnt = capture.peek_cnt();
-                    let (pa_ndtr, pb_ndtr) = capture.peek_dma_ndtr();
-                    let mut buf = [0u8; 48];
-                    let msg = fmt_idle3(&mut buf, cnt, pa_ndtr, pb_ndtr);
-                    wire::encode_log(msg, &mut sink);
-                    
-                }
-            } else {
                 last_idle_log = embassy_time::Instant::now();
             }
 
@@ -291,11 +290,11 @@ async fn main(_spawner: Spawner) {
                 last_stats = embassy_time::Instant::now();
             }
 
-            // Yield once per iteration so the LED + RX tasks get to
-            // run. `read_chunk` only awaits cooperatively when its
-            // ring lacks samples, and `Sink::push` busy-waits on the
-            // UART ring; without this yield the cap loop can
-            // monopolise the executor under sustained streaming.
+            // Yield once per iteration so LED + RX get scheduled.
+            // `read_available` only awaits when both rings are empty;
+            // when data is plentiful it returns immediately, and
+            // `Sink::push` busy-waits on a full UART ring. Without
+            // this yield the cap loop can monopolise the executor.
             embassy_futures::yield_now().await;
         }
     };

@@ -27,7 +27,8 @@
 //! within 1 sample of each other; the drain function reads
 //! `min(available_pa, available_pb)` paired samples per call.
 
-use embassy_futures::select::{select, Either};
+use core::future::poll_fn;
+use core::task::Poll;
 use embassy_stm32::dma::{ReadableRingBuffer, TransferOptions};
 use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::pac;
@@ -35,7 +36,6 @@ use embassy_stm32::peripherals::{PA0, TIM2};
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::timer::{Ch1, Ch2, Dma as TimDma};
 use embassy_stm32::Peri;
-use embassy_time::{Duration, Timer as TimeTimer};
 
 /// Mask of PA bits that are wired to the display flex. Bits outside
 /// this mask are noise (floating inputs, other peripherals) and must
@@ -315,81 +315,36 @@ impl<'d> Capture<'d> {
         n
     }
 
-    /// Async variant of [`drain`] that waits (up to `timeout`) for the
-    /// DMA to land at least `out_pa.len()` paired samples before
-    /// returning. Sleeps the task between progress events so other
-    /// futures (TX, RX, LED) get CPU; wakes on DMA half-/full-transfer
-    /// interrupts via embassy's `read_exact`. On timeout, falls back
-    /// to a best-effort sync drain (whatever's currently available).
-    pub async fn read_chunk(
+    /// Wait until at least one paired sample is available, then drain
+    /// whatever's currently in both rings (up to `out_pa.len()`) and
+    /// return the count.
+    ///
+    /// Unlike [`read_chunk`], this doesn't wait for a fixed batch — it
+    /// wakes on the DMA's half-/full-transfer IRQ (at N/2 and wrap)
+    /// and immediately drains whatever has landed. Caller decides
+    /// how much to drain per wake via the `out_pa`/`out_pb` slice
+    /// size. Wakeup latency is bounded by the DMA wake granularity
+    /// (RING_LEN/2 samples), not by `out_pa.len()`.
+    ///
+    /// On ring overrun, does a full resync (same as `drain`) and
+    /// returns 0.
+    pub async fn read_available(
         &mut self,
         out_pa: &mut [u16],
         out_pb: &mut [u16],
-        timeout: Duration,
     ) -> usize {
-        debug_assert_eq!(out_pa.len(), out_pb.len());
-        let want = out_pa.len();
-
-        // Wait for PA to have `want` samples (or timeout). PA leads PB
-        // by 1 cycle in our setup, so once PA has `want` samples PB
-        // has at least want-1 — sometimes exactly `want`. Either way
-        // the sync `drain()` below takes care of pairing.
-        match select(
-            self.pa_ring.read_exact(out_pa),
-            TimeTimer::after(timeout),
-        )
+        poll_fn(|cx| {
+            // Register on PA only — PB fills in lockstep, so PA's
+            // half-/full-transfer IRQ implies PB has data too.
+            self.pa_ring.set_waker(cx.waker());
+            let n = self.drain(out_pa, out_pb);
+            if n > 0 {
+                Poll::Ready(n)
+            } else {
+                Poll::Pending
+            }
+        })
         .await
-        {
-            Either::First(Ok(_)) => {
-                // PA filled. Pull whatever PB has now into out_pb,
-                // then apply masks and pair-trim.
-                let pb_res = self.pb_ring.read(out_pb);
-                // Apply mask to PA (already filled).
-                for s in &mut out_pa[..want] {
-                    *s &= PA_MASK;
-                }
-                let pb_read = match pb_res {
-                    Ok((r, _)) => r,
-                    Err(_) => {
-                        // PB overrun — do a full resync. read_exact
-                        // already consumed PA samples, but they'll be
-                        // discarded by the caller seeing the resync
-                        // pulse (overrun frame + sync gap).
-                        self.resync_on_overrun();
-                        return 0;
-                    }
-                };
-                for s in &mut out_pb[..pb_read] {
-                    *s &= PB_MASK;
-                }
-                want.min(pb_read)
-            }
-            Either::First(Err(_)) => {
-                // PA overrun while waiting.
-                self.resync_on_overrun();
-                0
-            }
-            Either::Second(_) => {
-                // Timeout — best-effort sync drain.
-                self.drain(out_pa, out_pb)
-            }
-        }
-    }
-
-    fn resync_on_overrun(&mut self) {
-        let r = self._tim.regs_gp16();
-        r.cr1().modify(|w| w.set_cen(false));
-        r.sr().modify(|w| {
-            w.set_uif(false);
-            w.set_ccif(0, false);
-            w.set_ccif(1, false);
-        });
-        let n = self.pa_ring.capacity() as u32;
-        self.dropped = self.dropped.saturating_add(n);
-        self.dropped_total = self.dropped_total.saturating_add(n);
-        self.pa_ring.clear();
-        self.pb_ring.clear();
-        r.cr1().modify(|w| w.set_cen(true));
     }
 
     /// Take + reset the since-last-call dropped-samples counter.
