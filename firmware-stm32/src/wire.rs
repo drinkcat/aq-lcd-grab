@@ -116,12 +116,17 @@ impl Encoder {
 
         // Not extending a run. Two sub-cases.
 
-        // (a) We have a run of length ≥ 2 to flush. The block was already
-        // drained when this run hit length 2, so we just flush the run
-        // and seed a new block with the incoming sample.
+        // (a) We have a run of length ≥ 2 to flush. The block was
+        // already drained when this run hit length 2, so just flush
+        // the run. Then seed the new sample as the start of a
+        // fresh run-of-1 (NOT into the block — pushing into block
+        // here would cause a spurious BLOCK n=1 to emit when the
+        // next sample extends the run to length 2, fragmenting a
+        // continuous color into "BLOCK 1 X / RUN N X").
         if self.run_len >= 2 {
             self.flush_run(sink);
-            self.push_to_block(sample, sink);
+            self.run_sample = sample;
+            self.run_len = 1;
             return;
         }
 
