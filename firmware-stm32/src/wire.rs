@@ -40,21 +40,11 @@ const MAX_RUN: u8 = 255;
 const MAX_BLOCK: usize = 16;
 
 /// Byte sink: where the encoder pushes wire bytes.
-///
-/// Frame atomicity is enforced via [`commit_frame`](Self::commit_frame):
-/// the encoder pushes a frame's bytes one at a time, then calls
-/// `commit_frame()` to signal "this frame is complete". A sink that can
-/// fail half-way through a frame (e.g. a finite-capacity queue) must
-/// buffer per-frame and discard the partial frame on commit if any push
-/// failed. Without that, the host would parse the truncated frame and
-/// desync.
 pub trait Sink {
-    /// Push one byte. Return true if accepted, false if dropped (full).
-    fn push(&mut self, b: u8) -> bool;
-    /// Mark the end of a frame. The sink may use this to atomically
-    /// publish a buffered frame, or to discard it if any push during
-    /// the frame failed. Default: no-op (suitable for infinite sinks).
-    fn commit_frame(&mut self) {}
+    /// Push a contiguous slice of bytes. The sink may block until the
+    /// whole slice is accepted; the encoder assumes it never short-
+    /// writes (a torn frame would desync the host's parser).
+    fn write(&mut self, buf: &[u8]);
 }
 
 /// Encoder state.
@@ -158,13 +148,9 @@ impl Encoder {
         if self.block_n == 0 {
             return;
         }
-        sink.push(TAG_BLOCK);
-        sink.push(self.block_n as u8);
         let bytes = self.block_n * 4;
-        for &b in &self.block[..bytes] {
-            sink.push(b);
-        }
-        sink.commit_frame();
+        sink.write(&[TAG_BLOCK, self.block_n as u8]);
+        sink.write(&self.block[..bytes]);
         self.block_n = 0;
     }
 
@@ -180,12 +166,8 @@ impl Encoder {
             return;
         }
         // run_len >= 2 → emit as tag=0x02.
-        sink.push(TAG_RUN);
-        sink.push(self.run_len);
-        for &b in &self.run_sample.to_le_bytes() {
-            sink.push(b);
-        }
-        sink.commit_frame();
+        let bytes = self.run_sample.to_le_bytes();
+        sink.write(&[TAG_RUN, self.run_len, bytes[0], bytes[1], bytes[2], bytes[3]]);
         self.run_len = 0;
     }
 
@@ -205,36 +187,24 @@ impl Encoder {
 
 /// Encode a tag=0xFD overrun frame.
 pub fn encode_overrun<S: Sink>(dropped: u32, sink: &mut S) {
-    sink.push(TAG_OVERRUN);
     let b = dropped.to_le_bytes();
-    sink.push(b[0]);
-    sink.push(b[1]);
-    sink.push(b[2]);
-    sink.push(b[3]);
-    sink.commit_frame();
+    sink.write(&[TAG_OVERRUN, b[0], b[1], b[2], b[3]]);
 }
 
 /// Encode a tag=0xFE log frame. `msg` is truncated to 256 bytes.
 pub fn encode_log<S: Sink>(msg: &str, sink: &mut S) {
     let bytes = msg.as_bytes();
     let len = bytes.len().min(256);
-    sink.push(TAG_LOG);
-    sink.push(len as u8);
-    sink.push((len >> 8) as u8);
-    for &b in &bytes[..len] {
-        sink.push(b);
-    }
-    sink.commit_frame();
+    sink.write(&[TAG_LOG, len as u8, (len >> 8) as u8]);
+    sink.write(&bytes[..len]);
 }
 
 /// Encode tag=0xFB STARTED ack.
 pub fn encode_started<S: Sink>(sink: &mut S) {
-    sink.push(TAG_STARTED);
-    sink.commit_frame();
+    sink.write(&[TAG_STARTED]);
 }
 
 /// Encode tag=0xFC STOPPED ack.
 pub fn encode_stopped<S: Sink>(sink: &mut S) {
-    sink.push(TAG_STOPPED);
-    sink.commit_frame();
+    sink.write(&[TAG_STOPPED]);
 }

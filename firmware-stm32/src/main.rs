@@ -50,10 +50,8 @@ enum HostCmd {
 }
 
 /// `Sink` that pushes each byte straight into the BufferedUart's TX
-/// ring. `commit_frame` is a no-op: there's nothing to flush because
-/// each byte was already enqueued by `push`. When the ring is full,
-/// `push` spins on `blocking_write` until the ISR drains a byte
-/// (~10 µs at 921600 baud).
+/// ring. When the ring is full, `push` spins on `blocking_write`
+/// until the ISR drains a byte (~10 µs at 921600 baud).
 struct UartSink<'a, 'd> {
     tx: &'a mut BufferedUartTx<'d>,
 }
@@ -65,12 +63,17 @@ impl<'a, 'd> UartSink<'a, 'd> {
 }
 
 impl<'a, 'd> Sink for UartSink<'a, 'd> {
-    fn push(&mut self, b: u8) -> bool {
-        loop {
-            match self.tx.write(&[b]) {
+    fn write(&mut self, buf: &[u8]) {
+        // Spin until the whole slice is in the UART ring.
+        // `BufferedUartTx::write` short-writes when only part of the
+        // ring is free — loop on the remainder. A torn frame would
+        // desync the host's parser.
+        let mut off = 0;
+        while off < buf.len() {
+            match self.tx.write(&buf[off..]) {
                 Ok(0) => continue, // ring full — spin until ISR drains
-                Ok(_) => return true,
-                Err(_) => return false, // UART error; host will reset us
+                Ok(n) => off += n,
+                Err(_) => return, // UART error; host will reset us
             }
         }
     }
