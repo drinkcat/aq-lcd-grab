@@ -53,14 +53,14 @@ the START/STOP handshake and decodes the frames.
 
 ## Pin assignment
 
-| Pico GPIO | Function |
-|-----------|----------|
-| 0–15 | DB0–DB15 (16-bit data bus, must be consecutive for PIO `in pins, 16`) |
-| 16 | CS |
-| 17 | D/C (RS) |
-| 18 | WR (write strobe — sample trigger) |
-| 22, 26–28 | spare |
-| 23, 24, 25, 29 | reserved for CYW43 wifi |
+| Pico GPIO | Function | Cable |
+|-----------|----------|-------|
+| 0–15 | DB0–DB15 (16-bit data bus, must be consecutive for PIO `in pins, 16`) | |
+| 16 | CS | orange |
+| 17 | D/C (RS) | yellow |
+| 18 | WR (write strobe — sample trigger) | green |
+| 22, 26–28 | spare | |
+| 23, 24, 25, 29 | reserved for CYW43 wifi | |
 
 ## Notes
 
