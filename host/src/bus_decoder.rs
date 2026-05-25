@@ -1,13 +1,15 @@
-//! 8080 bus framing: `(data, dc)` samples → command transactions.
+//! 8080 bus framing: `(data, is_data)` samples → command transactions.
 //!
-//! DC=0 marks a new command byte (low 8 bits of the bus word). DC=1
-//! contributes a data word to the in-flight command's payload. The
-//! current transaction is emitted when the next DC=0 sample arrives.
+//! `is_data == false` marks a new command byte (low 8 bits of the bus
+//! word). `is_data == true` contributes a data word to the in-flight
+//! command's payload. The current transaction is emitted when the
+//! next command-byte sample arrives.
 //!
-//! CS isn't used for framing — live captures of the target show
-//! occasional CS=1 glitches mid-transfer, so DC alone is the
-//! authoritative boundary (same convention the original Pico-side
-//! decoder used).
+//! Whether DC or CS provides the framing signal is a per-board choice
+//! made in `permute.rs` — on the Pico capture rig the panel's DC line
+//! is what changes per byte; on the F103 board the target's PIC32 holds
+//! DC high constantly and uses CS as the cmd/data discriminator
+//! instead.
 
 /// One framed 8080 transaction.
 #[derive(Clone, Debug)]
@@ -26,11 +28,11 @@ impl BusDecoder {
         Self::default()
     }
 
-    /// Feed one `(data, dc)` sample. If this sample is a new command
-    /// (DC=0), returns the previous transaction.
-    pub fn feed(&mut self, data: u16, dc: bool) -> Option<Frame> {
-        if !dc {
-            // DC=0 → new command byte. Emit whatever was in flight.
+    /// Feed one sample. `is_data == false` means this byte is a new
+    /// command — returns the previous transaction.
+    pub fn feed(&mut self, data: u16, is_data: bool) -> Option<Frame> {
+        if !is_data {
+            // Command byte. Emit whatever was in flight.
             let next = Frame {
                 cmd: (data & 0xFF) as u8,
                 data: Vec::new(),
@@ -43,18 +45,15 @@ impl BusDecoder {
         None
     }
 
-    /// Feed `n` copies of the same sample efficiently. Equivalent to
-    /// calling `feed(data, dc)` `n` times, but without growing the
-    /// payload one push at a time.
-    pub fn feed_run(&mut self, n: usize, data: u16, dc: bool) -> Option<Frame> {
+    /// Feed `n` copies of the same sample efficiently.
+    pub fn feed_run(&mut self, n: usize, data: u16, is_data: bool) -> Option<Frame> {
         if n == 0 {
             return None;
         }
-        if !dc {
-            // n DC=0 samples in a row = the same command byte repeated.
-            // Only the first edge restarts framing; the rest are redundant
-            // re-issues of the same command with no payload. Emit the
-            // previous tx once, then collapse the run.
+        if !is_data {
+            // n command-byte samples in a row — the same command
+            // repeated. Only the first restarts framing; the rest are
+            // redundant. Emit the previous tx once, then collapse.
             let next = Frame {
                 cmd: (data & 0xFF) as u8,
                 data: Vec::new(),

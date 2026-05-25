@@ -29,7 +29,7 @@ enum Board {
 }
 
 impl Board {
-    fn permute(self, sample: u32) -> (u16, bool, bool) {
+    fn permute(self, sample: u32) -> (u16, bool) {
         match self {
             Board::Pico => permute::permute_pico(sample),
             Board::F103 => permute::permute_f103(sample),
@@ -186,6 +186,11 @@ fn reader_loop(
             // quiet window.
             let mut port_handle = serialport::new(&port, 921_600)
                 .timeout(Duration::from_millis(50))
+                // Non-exclusive so `printf '\x04' > /dev/ttyUSB0` can
+                // poke STATS while the viewer is running. Garbled
+                // bytes are possible if someone reads concurrently,
+                // but writes from another process are fine.
+                .exclusive(false)
                 .open()
                 .with_context(|| format!("opening serial port {port}"))?;
             // F103 wires DTR→BOOT0 and RTS→NRST through 1k resistors
@@ -277,22 +282,29 @@ fn dispatch_event(
 ) {
     match ev {
         Event::Block(samples) => {
-            // Per-frame digest: shape + first/last sample. Skip the
-            // body itself — at full rate this would drown stdout.
-            if let (Some(&s0), Some(&sn)) = (samples.first(), samples.last()) {
-                println!("BLOCK n={} {:08x}..{:08x}", samples.len(), s0, sn);
+            print!("BLOCK n={:3}", samples.len());
+            for s in &samples {
+                let (data, is_data) = board.permute(*s);
+                // 'D' = data word, 'C' = command byte.
+                print!(" {}:{:04x}", if is_data { 'D' } else { 'C' }, data);
             }
+            println!();
             for s in samples {
-                let (data, dc, _cs) = board.permute(s);
-                if let Some(tx) = bus.feed(data, dc) {
+                let (data, is_data) = board.permute(s);
+                if let Some(tx) = bus.feed(data, is_data) {
                     handle_frame(g, glyphs, dump_dir, seen, tx);
                 }
             }
         }
         Event::Run { n, sample } => {
-            println!("RUN   n={:3} {:08x}", n, sample);
-            let (data, dc, _cs) = board.permute(sample);
-            if let Some(tx) = bus.feed_run(n as usize, data, dc) {
+            let (data, is_data) = board.permute(sample);
+            println!(
+                "RUN   n={:3} {}:{:04x}",
+                n,
+                if is_data { 'D' } else { 'C' },
+                data
+            );
+            if let Some(tx) = bus.feed_run(n as usize, data, is_data) {
                 handle_frame(g, glyphs, dump_dir, seen, tx);
             }
         }
