@@ -144,7 +144,14 @@ impl<'d> Capture<'d> {
         r.smcr().modify(|w| {
             w.set_etf(pac::timer::vals::FilterValue::NO_FILTER);
             w.set_etps(pac::timer::vals::Etps::DIV1);
-            w.set_etp(pac::timer::vals::Etp::NOT_INVERTED);
+            // Sample on WR *falling* edge, matching the Pico PIO
+            // (`firmware/src/pio_capture.rs`). The PIC32 in the target
+            // appears to deassert DC slightly before WR rises (8080
+            // timing violation), so sampling at the rising edge sees
+            // DC already back to "data" even for command bytes.
+            // Sampling at the falling edge catches DC while it's
+            // still asserted for the in-flight byte.
+            w.set_etp(pac::timer::vals::Etp::INVERTED);
             w.set_ece(true); // external clock mode 2: clock = ETRF
         });
 
@@ -182,8 +189,9 @@ impl<'d> Capture<'d> {
             w.set_icpsc(1, 0);
         });
         r.ccer().modify(|w| {
-            w.set_ccp(0, false); w.set_cce(0, true);  // CC1 rising, enable
-            w.set_ccp(1, false); w.set_cce(1, true);  // CC2 rising, enable
+            // Falling edge for both, matching ETR (see SMCR.ETP comment).
+            w.set_ccp(0, true); w.set_cce(0, true);  // CC1 falling, enable
+            w.set_ccp(1, true); w.set_cce(1, true);  // CC2 falling, enable
         });
 
         // Enable both CC DMA request lines.
