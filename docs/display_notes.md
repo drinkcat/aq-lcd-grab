@@ -38,31 +38,37 @@ A 39-pin 3.5" Tianma panel exists (TM035KDH03-39) but uses RGB interface, not
 8080 — probably **not** the same panel. The target's panel is likely a generic OEM
 unit; no public datasheet found.
 
-## Estimated Pinout
+## Pinout
 
-Probed signals (note: pin 1/39 orientation may be flipped — adjust if so).
+Matched against the datasheet for the 39-pin 3.5" TFT module used in the target
+([Alibaba listing](https://www.alibaba.com/product-detail/3-5-Inch-TFT-LCD-Display_1601742192469.html)).
+Pin numbering below is the physical probing order (pin 1 = the GND end first
+probed); the datasheet itself numbers the FPC from the opposite end.
 
-| Pin | Signal (observed) | Likely function |
-|-----|-------------------|-----------------|
-| 1 | GND (continuity) | GND |
-| 2–6 | high-freq pulses | DB0–DB4 (data low bits) |
-| 7–12 | pulses, sometimes lingering 3.3V | DB5–DB10 |
-| 13–17 | slower pulses | DB11–DB15 (data high bits) |
-| 18 | GND (continuity) | GND |
-| 19 | GND (continuity) | GND |
-| 20 | held high | RD (tied high, not used) or RST (released) |
-| 21 | unknown | TE / RST / NC |
-| 22 | 500ns low pulses every ~1.5µs | **WR** (write strobe, ~667 kHz word rate) |
-| 23 | ~500ns low pulse every ~10µs | **D/C (RS)** (command vs data) |
-| 24 | ~200ns low pulses every ~1.5µs | **CS** per-word, or strobe |
-| 25–32 | unknown | LED+/LED−, extra GND, RST, TE, NC |
-| 33 | 3.3V (continuity) | VCC/VDDI |
-| 34 | unknown | likely VCC/GND |
-| 35 | 3.3V (continuity) | VCC/IOVCC |
-| 36 | 3.3V (continuity) | VCC |
-| 37 | 3.3V (continuity) | VCC |
-| 38 | unknown | likely VCC/GND |
-| 39 | unknown | likely GND |
+| Pin | Signal | Notes |
+|-----|--------|-------|
+| 1 | GND | |
+| 2–17 | DB0..DB15 | 16-bit parallel data bus |
+| 18, 19 | DB16, DB17 | low — bus strapped to 8080-16, upper bits unused |
+| 20 | RESET | held high |
+| 21 | FMARK | TE-equivalent frame-sync output |
+| 22 | **CS** | 500 ns low pulses every ~1.5 µs (per-word framing, ~667 kHz) |
+| 23 | **RS/DC** | ~500 ns low pulse every ~10 µs (command/data) |
+| 24 | **WR** | ~200 ns low pulses every ~1.5 µs (write strobe) |
+| 25 | RD | tied high (read not used) |
+| 26 | GND | |
+| 27–31 | LED-K1..LED-K5 | backlight cathodes |
+| 32–34 | IM2, IM1, IM0 | interface-mode strap pins |
+| 35 | LED-K6 | (6th LED cathode — tied high here, unused) |
+| 36 | IOVCC | logic supply |
+| 37 | VCI | analog supply, 3.3V |
+| 38 | LED-A | backlight anode, tied to 3.3V |
+| 39 | NC | |
+
+### Bus width
+
+It is an **18-bit-capable 8080 bus** (DB0–DB17), but the IM strap pins select
+8080-16 mode, so DB16/DB17 are tied low and only DB0–DB15 carry data.
 
 ### Sanity-check math
 
@@ -73,8 +79,7 @@ Probed signals (note: pin 1/39 orientation may be flipped — adjust if so).
 
 ### To confirm with capture
 
-- [ ] Bus width (16 vs 8 bit — bet is 16)
-- [ ] WR vs CS phase relationship (which pulse contains which)
+- [ ] Verify DB16/DB17 (pins 18, 19) are static-low, not floating
 - [ ] DC behavior at burst boundaries → identify command bytes
 - [ ] Identify Set Column Address (`0x2A`), Set Row Address (`0x2B`), Memory
       Write (`0x2C`) commands and their arguments
