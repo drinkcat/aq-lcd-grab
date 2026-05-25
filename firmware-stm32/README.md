@@ -63,6 +63,28 @@ picocom -b 115200 /dev/ttyUSB0    # or screen, minicom, tio, etc.
 If you used the same adapter for flashing, close `stm32flash` first
 (the runner exits cleanly) before opening the terminal.
 
+## Bench-rig wiring (target → Blue Pill F103C8)
+
+The PCB and final firmware will use TIM1/PA12 for WR, but bench
+development on a Blue Pill uses TIM2/PA0 because the Blue Pill ties
+PA12 to 3V3 through a 1.5 kΩ USB-DP pull-up that distorts an
+external WR signal. PB3/PB4 are skipped because they're JTAG outputs
+at reset and we don't bother disabling SWJ.
+
+| target FPC pin | Signal     | F103 pin  | Cable  |
+|-------------|------------|-----------|--------|
+| 22          | CS         | PB13      | orange |
+| 23          | DC         | PB12      | yellow |
+| 24          | WR         | PA0       | green  |
+| 2–8         | DB0–DB6    | PA1–PA7   |        |
+| 9–10        | DB7–DB8    | PB0–PB1   |        |
+| 11–12       | DB9–DB10   | PB10–PB11 |        |
+| 13–17       | DB11–DB15  | PB5–PB9   |        |
+| 1           | GND        | GND       |        |
+
+`host/src/permute.rs::permute_f103` knows this routing and
+unscrambles `(pa, pb)` back into logical `(data, dc, cs)`.
+
 ## Notes for the capture PCB vs the dev board
 
 The MCBSTM32 dev board is an F103RBT6 (LQFP-64, 128 KB flash). The

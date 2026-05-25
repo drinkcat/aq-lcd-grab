@@ -27,26 +27,22 @@ pub fn permute_pico(sample: u32) -> (u16, bool) {
     (data, is_data)
 }
 
-/// F103 capture board layout, Blue Pill bench rig (firmware-stm32/src/capture.rs):
+/// F103 capture board layout, Blue Pill bench rig
+/// (see firmware-stm32/README.md):
 ///   PA0        → WR (timer ETR, not part of the sample)
-///   PA1..PA7   → DB1..DB7      (sample bits 1..7)
-///   PB0..PB1   → DB8..DB9      (sample bits 16..17)
-///   PB5..PB8   → DB12..DB15    (sample bits 21..24)
-///   PB9        → DB0           (sample bit 25)  (relocated off PA0)
-///   PB10       → DC            (sample bit 26)  (held high by the target)
-///   PB11       → CS            (sample bit 27)  ← framing signal
-///   PB12..PB13 → DB10..DB11    (sample bits 28..29)  (off PB3/PB4 to dodge JTAG)
+///   PA1..PA7   → DB0..DB6      (sample bits 1..7)
+///   PB0..PB1   → DB7..DB8      (sample bits 16..17)
+///   PB5..PB9   → DB11..DB15    (sample bits 21..25)
+///   PB10..PB11 → DB9..DB10     (sample bits 26..27)
+///   PB12       → DC            (sample bit 28)  ← framing signal
+///   PB13       → CS            (sample bit 29)
 pub fn permute_f103(sample: u32) -> (u16, bool) {
     let pa = sample as u16;
     let pb = (sample >> 16) as u16;
-    let data = ((pb >> 9) & 0x0001)              // DB0        ← PB9
-        | (pa & 0x00FE)                          // DB1..DB7   ← PA1..PA7
-        | ((pb & 0x0003) << 8)                   // DB8..DB9   ← PB0..PB1
-        | (((pb >> 12) & 0x0003) << 10)          // DB10..DB11 ← PB12..PB13
-        | (((pb >> 5) & 0x000F) << 12);          // DB12..DB15 ← PB5..PB8
-    // The target's PIC32 holds the panel's DC pin high (PB10 is stuck
-    // at 1 in captures) and uses CS as the cmd/data discriminator:
-    // CS=0 = command byte, CS=1 = data word.
-    let is_data = pb & (1 << 11) != 0;
+    let data = ((pa >> 1) & 0x007F)              // DB0..DB6   ← PA1..PA7
+        | ((pb & 0x0003) << 7)                   // DB7..DB8   ← PB0..PB1
+        | (((pb >> 10) & 0x0003) << 9)           // DB9..DB10  ← PB10..PB11
+        | (((pb >> 5) & 0x001F) << 11);          // DB11..DB15 ← PB5..PB9
+    let is_data = pb & (1 << 12) != 0;
     (data, is_data)
 }

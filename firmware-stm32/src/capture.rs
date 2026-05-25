@@ -39,23 +39,21 @@ use embassy_stm32::Peri;
 /// this mask are noise (floating inputs, other peripherals) and must
 /// be zeroed before RLE so they don't break runs.
 ///
-/// Blue Pill bench routing:
+/// Blue Pill bench routing (see firmware-stm32/README.md):
 ///   PA0       = WR (TIM2 ETR; not part of the data sample)
-///   PA1..PA7  = DB1..DB7  (DB0 moved off PA0 to PB9 — see PB_MASK)
+///   PA1..PA7  = DB0..DB6
 /// All other PA bits are unused.
 pub const PA_MASK: u16 = 0x00FE;
 
 /// Blue Pill bench routing:
-///   PB0..PB1   = DB8..DB9
+///   PB0..PB1   = DB7..DB8
 ///   PB2        = not exposed on the F103C8 package
 ///   PB3, PB4   = JTAG TDO / NJTRST at reset; skipped so we don't have
 ///                to fiddle with AFIO SWJ_CFG
-///   PB5..PB8   = DB12..DB15
-///   PB9        = DB0 (relocated here because PA0 became WR/ETR)
-///   PB10       = DC
-///   PB11       = CS
-///   PB12, PB13 = DB10, DB11 (moved off PB3/PB4 to dodge JTAG)
-/// Host permute layer re-orders these into logical (data, dc, cs).
+///   PB5..PB9   = DB11..DB15
+///   PB10..PB11 = DB9..DB10
+///   PB12       = DC
+///   PB13       = CS
 pub const PB_MASK: u16 = 0x3FE3;
 
 /// Capture pin set. The data pins themselves don't need typed handles
