@@ -220,9 +220,21 @@ async fn main(_spawner: Spawner) {
                     Err(_) => break,
                 }
             }
-            if <_ as Write>::write(&mut tx, &buf[..n]).await.is_err() {
-                // UART error is fatal-ish; the host will reset us.
-                // Just drop and continue draining so we don't deadlock.
+            // `write` can short-write (returns whatever fit in the
+            // interrupt-side TX ring), so loop until everything's in.
+            // Without this, bytes silently disappear mid-frame and the
+            // host parser desyncs.
+            let mut off = 0;
+            while off < n {
+                match <_ as Write>::write(&mut tx, &buf[off..n]).await {
+                    Ok(0) => break, // shouldn't happen, but don't spin
+                    Ok(w) => off += w,
+                    Err(_) => {
+                        // UART error is fatal-ish; host will reset us.
+                        // Drop the rest of the frame so we don't deadlock.
+                        break;
+                    }
+                }
             }
         }
     };
