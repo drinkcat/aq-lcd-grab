@@ -29,8 +29,11 @@ bind_interrupts!(struct Irqs {
 /// to stage many small frames ahead of the wire.
 ///
 /// `Pipe<u8>` instead of `Channel<u8>`: lets the sink push whole
-/// frames atomically via `try_write_all` (no per-byte locking) and
-/// lets the TX task bulk-read into a stack scratch in one shot.
+/// frames atomically via `try_write` (no per-byte locking) and lets
+/// the TX task read straight out of the pipe's internal buffer
+/// (`fill_buf` / `consume`) — no staging copy. The pipe lives on
+/// `main()`'s frame so we can `split()` it into a Reader (for the
+/// TX task) and Writer (for the sink).
 const TX_PIPE_CAP: usize = 2048;
 static TX_PIPE: Pipe<ThreadModeRawMutex, TX_PIPE_CAP> = Pipe::new();
 
@@ -225,6 +228,16 @@ async fn main(_spawner: Spawner) {
     // (returns just what fit in the interrupt-side TX ring);
     // without the inner loop bytes would silently disappear and
     // the host parser would desync.
+    //
+    // TODO: ditch this 64 B stack buf. Pipe → BufferedUart could be a
+    // direct zero-copy hand-off via `Reader::fill_buf` / `consume`
+    // — except that requires `Pipe::split()` (we need a Reader
+    // handle) and the sink-side capacity check needs
+    // `Pipe::free_capacity()` which isn't exposed on the Writer
+    // half, so the split halves don't compose with our atomic-frame
+    // invariant. Either upstream embassy_sync exposes free_capacity
+    // on the Writer, or we re-implement an atomic-frame pipe of our
+    // own. For now: one extra 64 B copy on the way out, ~negligible.
     let tx_fut = async {
         let mut buf = [0u8; 64];
         loop {
@@ -263,7 +276,11 @@ async fn main(_spawner: Spawner) {
     let cap_fut = async {
         let mut pa_buf = [0u16; DRAIN_CHUNK];
         let mut pb_buf = [0u16; DRAIN_CHUNK];
-        let mut idle_ticks: u32 = 0;
+        // Time-based (not loop-tick-based) cadence for the periodic
+        // diagnostic emits below — the cap loop's iteration rate
+        // depends on DMA progress, so iteration counts aren't a
+        // reliable clock.
+        let mut last_idle_log = embassy_time::Instant::now();
         // Auto-emit a STATS log line every ~5 s while streaming, so
         // the host's run.log carries a trail of tx_dropped /
         // cap_dropped counters even under sustained traffic (where
@@ -303,25 +320,28 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // Auto-STATS heartbeat every ~5 s while streaming.
-            if state == StreamState::Streaming
-                && last_stats.elapsed() >= embassy_time::Duration::from_secs(5)
-            {
-                let mut buf = [0u8; 64];
-                let msg = fmt_stats(
-                    &mut buf,
-                    sink.dropped,
-                    capture.peek_dropped_total(),
-                );
-                wire::encode_log(msg, &mut sink);
-                last_stats = embassy_time::Instant::now();
+            // Wait for the next chunk of samples (or 10 ms timeout).
+            // While we wait, the executor parks us and runs LED/RX/TX.
+            // Wake source: DMA half-/full-transfer IRQ via embassy's
+            // `read_exact`. On timeout we fall back to a best-effort
+            // sync drain so the housekeeping loop (commands, stats,
+            // heartbeat) still ticks during idle bus periods.
+            let n = capture
+                .read_chunk(&mut pa_buf, &mut pb_buf, embassy_time::Duration::from_millis(10))
+                .await;
+
+            // In STOPPED state, nothing to capture. Just clear any
+            // accumulated drops and sleep a tick so we don't spin.
+            if state != StreamState::Streaming {
+                let _ = capture.take_dropped();
+                embassy_time::Timer::after_millis(10).await;
+                continue;
             }
 
-            // Drain rings regardless of state — keeping them empty
-            // prevents an overrun marker the moment we start.
-            let n = capture.drain(&mut pa_buf, &mut pb_buf);
-
-            if n > 0 && state == StreamState::Streaming {
+            if n == 0 {
+                // Stupid Claude: it's commented
+                //encoder.flush(&mut sink);
+            } else {
                 for i in 0..n {
                     // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
                     // Packing into one u32 matches the on-wire LE byte
@@ -330,47 +350,49 @@ async fn main(_spawner: Spawner) {
                     let sample = pa_buf[i] as u32 | (pb_buf[i] as u32) << 16;
                     encoder.feed(sample, &mut sink);
                 }
-                // Flush block/run on each drain cycle so latency is
-                // bounded by the drain period, not by waiting for a
-                // 255-sample fill.
-                encoder.flush(&mut sink);
 
                 let dropped = capture.take_dropped();
                 if dropped > 0 {
                     wire::encode_overrun(dropped, &mut sink);
                 }
-            } else {
-                // Discard accumulated drops in STOPPED mode — they're
-                // not interesting.
-                let _ = capture.take_dropped();
             }
 
-            // Always yield once per outer iteration. With ETR=PA12
-            // floating on a bench rig (no real WR signal), the timer
-            // picks up enough noise that `capture.drain` always returns
-            // samples and the inner loop never sleeps — without this
-            // yield, the LED/RX/TX tasks would never get scheduled.
-            embassy_futures::yield_now().await;
+            // If TX_PIPE is half-full or more, the UART task is
+            // falling behind. Yield so it can drain a chunk before
+            // we feed the encoder more samples — without this we
+            // can spin the cap loop hot, fill the pipe, and start
+            // dropping frames at commit_frame.
+            if TX_PIPE.len() >= TX_PIPE_CAP / 2 {
+                embassy_futures::yield_now().await;
+            }
 
+            // ~5 s diagnostic heartbeat while streaming. Dumps
+            // TIM2->CNT and the DMA NDTRs — if CNT advances and
+            // NDTR decrements between ticks, ETR + DMA are firing
+            // correctly.
             if n == 0 {
-                idle_ticks = idle_ticks.wrapping_add(1);
-                if idle_ticks.is_multiple_of(2500) {
-                    // ~5 s heartbeat. Dump TIM2->CNT plus the NDTR
-                    // remaining-transfer counters for the two DMA
-                    // channels. If CNT advances between ticks, ETR is
-                    // counting WR edges. If NDTR decrements, DMA is
-                    // firing.
-                    if state == StreamState::Streaming {
-                        let cnt = capture.peek_cnt();
-                        let (pa_ndtr, pb_ndtr) = capture.peek_dma_ndtr();
-                        let mut buf = [0u8; 48];
-                        let msg = fmt_idle3(&mut buf, cnt, pa_ndtr, pb_ndtr);
-                        wire::encode_log(msg, &mut sink);
-                    }
+                if last_idle_log.elapsed() >= embassy_time::Duration::from_secs(5) {
+                    let cnt = capture.peek_cnt();
+                    let (pa_ndtr, pb_ndtr) = capture.peek_dma_ndtr();
+                    let mut buf = [0u8; 48];
+                    let msg = fmt_idle3(&mut buf, cnt, pa_ndtr, pb_ndtr);
+                    wire::encode_log(msg, &mut sink);
+                    
                 }
-                Timer::after_millis(2).await;
             } else {
-                idle_ticks = 0;
+                last_idle_log = embassy_time::Instant::now();
+            }
+
+            // Auto-STATS heartbeat every ~5 s while streaming.
+            if last_stats.elapsed() >= embassy_time::Duration::from_secs(5) {
+                let mut buf = [0u8; 64];
+                let msg = fmt_stats(
+                    &mut buf,
+                    sink.dropped,
+                    capture.peek_dropped_total(),
+                );
+                wire::encode_log(msg, &mut sink);
+                last_stats = embassy_time::Instant::now();
             }
         }
     };
