@@ -75,8 +75,13 @@ pub struct Capture<'d> {
     _tim: Timer<'d, TIM2>,
     pa_ring: ReadableRingBuffer<'d, u16>,
     pb_ring: ReadableRingBuffer<'d, u16>,
-    /// Saturating counter of samples lost to ring overrun.
+    /// Samples lost to ring overrun *since the last `take_dropped`*.
+    /// Cap task drains this each tick to emit tag=0xFD overrun frames.
     dropped: u32,
+    /// Lifetime cumulative count of dropped samples — never reset.
+    /// Surfaced via STATS so the host can see whether ring overrun is
+    /// the dominant loss mode.
+    dropped_total: u32,
 }
 
 impl<'d> Capture<'d> {
@@ -215,6 +220,7 @@ impl<'d> Capture<'d> {
             pa_ring,
             pb_ring,
             dropped: 0,
+            dropped_total: 0,
         }
     }
 
@@ -244,7 +250,9 @@ impl<'d> Capture<'d> {
                 // Overrun on PA ring. We can't tell exactly how many
                 // were lost; conservatively count one full ring's worth
                 // and resync by clearing both sides.
-                self.dropped = self.dropped.saturating_add(self.pa_ring.capacity() as u32);
+                let n = self.pa_ring.capacity() as u32;
+                self.dropped = self.dropped.saturating_add(n);
+                self.dropped_total = self.dropped_total.saturating_add(n);
                 self.pa_ring.clear();
                 self.pb_ring.clear();
                 return 0;
@@ -253,7 +261,9 @@ impl<'d> Capture<'d> {
         let pb_read = match pb_result {
             Ok((read, _remaining)) => read,
             Err(_) => {
-                self.dropped = self.dropped.saturating_add(self.pb_ring.capacity() as u32);
+                let n = self.pb_ring.capacity() as u32;
+                self.dropped = self.dropped.saturating_add(n);
+                self.dropped_total = self.dropped_total.saturating_add(n);
                 self.pa_ring.clear();
                 self.pb_ring.clear();
                 return 0;
@@ -277,9 +287,14 @@ impl<'d> Capture<'d> {
         n
     }
 
-    /// Take + reset the dropped-samples counter.
+    /// Take + reset the since-last-call dropped-samples counter.
     pub fn take_dropped(&mut self) -> u32 {
         core::mem::replace(&mut self.dropped, 0)
+    }
+
+    /// Lifetime cumulative dropped-samples count — never reset. For STATS.
+    pub fn peek_dropped_total(&self) -> u32 {
+        self.dropped_total
     }
 
     /// Read TIM2's current counter value. Useful as a sign-of-life

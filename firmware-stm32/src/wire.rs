@@ -26,6 +26,7 @@ pub const TAG_STOPPED: u8 = 0xFC;
 
 pub const HOST_CMD_START: u8 = 0x01;
 pub const HOST_CMD_STOP: u8 = 0x02;
+pub const HOST_CMD_STATS: u8 = 0x04;
 
 /// Maximum samples per tag=0x01 block or tag=0x02 run.
 const MAX_RUN: u8 = 255;

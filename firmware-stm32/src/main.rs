@@ -17,7 +17,7 @@ use embassy_time::Timer;
 use panic_halt as _;
 
 use capture::{Capture, CapturePins};
-use wire::{Encoder, HOST_CMD_START, HOST_CMD_STOP, Sink};
+use wire::{Encoder, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP, Sink};
 
 bind_interrupts!(struct Irqs {
     USART1 => BufferedInterruptHandler<peripherals::USART1>;
@@ -52,6 +52,7 @@ enum StreamState {
 enum HostCmd {
     Start,
     Stop,
+    Stats,
 }
 
 /// `Sink` that stages each frame into a small scratch buffer, then
@@ -236,6 +237,7 @@ async fn main(_spawner: Spawner) {
             let cmd = match byte[0] {
                 HOST_CMD_START => HostCmd::Start,
                 HOST_CMD_STOP => HostCmd::Stop,
+                HOST_CMD_STATS => HostCmd::Stats,
                 _ => continue, // unknown command, ignore
             };
             CMD_QUEUE.send(cmd).await;
@@ -270,6 +272,15 @@ async fn main(_spawner: Spawner) {
                             STREAMING.store(false, core::sync::atomic::Ordering::Relaxed);
                         }
                         wire::encode_stopped(&mut sink);
+                    }
+                    HostCmd::Stats => {
+                        let mut buf = [0u8; 64];
+                        let msg = fmt_stats(
+                            &mut buf,
+                            sink.dropped,
+                            capture.peek_dropped_total(),
+                        );
+                        wire::encode_log(msg, &mut sink);
                     }
                 }
             }
@@ -358,5 +369,31 @@ fn write_label_u16(buf: &mut [u8], label: &[u8], val: u16) -> usize {
         };
     }
     label.len() + 4
+}
+
+/// Format `"stats: tx_dropped=XXXXXXXX cap_dropped=XXXXXXXX"` into
+/// `buf` and return a &str. `buf` must be at least 44 bytes.
+fn fmt_stats(buf: &mut [u8], tx_dropped: u32, cap_dropped: u32) -> &str {
+    let mut pos = 0;
+    let prefix = b"stats: ";
+    buf[..prefix.len()].copy_from_slice(prefix);
+    pos += prefix.len();
+    pos += write_label_u32(&mut buf[pos..], b"tx_dropped=", tx_dropped);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label_u32(&mut buf[pos..], b"cap_dropped=", cap_dropped);
+    core::str::from_utf8(&buf[..pos]).unwrap()
+}
+
+fn write_label_u32(buf: &mut [u8], label: &[u8], val: u32) -> usize {
+    buf[..label.len()].copy_from_slice(label);
+    for i in 0..8 {
+        let nibble = (val >> (28 - 4 * i)) & 0xF;
+        buf[label.len() + i] = if nibble < 10 {
+            b'0' + nibble as u8
+        } else {
+            b'a' + (nibble - 10) as u8
+        };
+    }
+    label.len() + 8
 }
 
