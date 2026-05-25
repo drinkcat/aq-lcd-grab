@@ -10,9 +10,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
 use eframe::egui;
 use bus_decoder::{BusDecoder, Frame};
@@ -180,8 +180,12 @@ fn reader_loop(
             // Baud doesn't matter for the Pico (USB CDC ignores it) but
             // gives the right rate for UART-attached boards like the
             // F103.
+            // Read timeout: the main loop treats a timed-out read as
+            // "no bytes" and pumps the glyph-row settler. The sync
+            // handshake's drain-until-quiet also uses this as its
+            // quiet window.
             let mut port_handle = serialport::new(&port, 921_600)
-                .timeout(Duration::from_millis(250))
+                .timeout(Duration::from_millis(50))
                 .open()
                 .with_context(|| format!("opening serial port {port}"))?;
             // F103 wires DTR→BOOT0 and RTS→NRST through 1k resistors
@@ -246,36 +250,7 @@ fn reader_loop(
 
         let mut g = shared.lock().unwrap();
         for ev in events {
-            match ev {
-                Event::Block(samples) => {
-                    for (pa, pb) in samples {
-                        let (data, dc, _cs) = board.permute(pa, pb);
-                        if let Some(tx) = bus.feed(data, dc) {
-                            handle_frame(&mut g, &mut glyphs, dump_dir.as_deref(), &mut seen, tx);
-                        }
-                    }
-                }
-                Event::Run { n, pa, pb } => {
-                    let (data, dc, _cs) = board.permute(pa, pb);
-                    if let Some(tx) = bus.feed_run(n as usize, data, dc) {
-                        handle_frame(&mut g, &mut glyphs, dump_dir.as_deref(), &mut seen, tx);
-                    }
-                }
-                Event::Overrun { dropped } => {
-                    let msg = format!("(firmware lost {dropped} WR edges)");
-                    println!("! {msg}");
-                    push_log(&mut g.log, LogEntry::Msg(msg));
-                }
-                Event::Log(text) => {
-                    println!("• {text}");
-                    push_log(&mut g.log, LogEntry::Msg(text));
-                }
-                Event::Started | Event::Stopped => {
-                    // Steady-state acks: just note them in the log.
-                    let s = if matches!(ev, Event::Started) { "STARTED" } else { "STOPPED" };
-                    push_log(&mut g.log, LogEntry::Msg(s.into()));
-                }
-            }
+            dispatch_event(ev, &mut g, &mut bus, &mut glyphs, dump_dir.as_deref(), &mut seen, board);
         }
         if read == 0 {
             // Idle pump: settle any glyph rows that have stopped updating.
@@ -286,6 +261,46 @@ fn reader_loop(
                 g.values.insert(r.name, r.value);
             }
         }
+    }
+}
+
+/// Process one wire event: permute samples, feed the bus decoder,
+/// hand any completed 8080 transactions to `handle_frame`.
+fn dispatch_event(
+    ev: Event,
+    g: &mut Shared,
+    bus: &mut BusDecoder,
+    glyphs: &mut decoder::Decoder,
+    dump_dir: Option<&Path>,
+    seen: &mut HashSet<u64>,
+    board: Board,
+) {
+    match ev {
+        Event::Block(samples) => {
+            for (pa, pb) in samples {
+                let (data, dc, _cs) = board.permute(pa, pb);
+                if let Some(tx) = bus.feed(data, dc) {
+                    handle_frame(g, glyphs, dump_dir, seen, tx);
+                }
+            }
+        }
+        Event::Run { n, pa, pb } => {
+            let (data, dc, _cs) = board.permute(pa, pb);
+            if let Some(tx) = bus.feed_run(n as usize, data, dc) {
+                handle_frame(g, glyphs, dump_dir, seen, tx);
+            }
+        }
+        Event::Overrun { dropped } => {
+            let msg = format!("(firmware lost {dropped} WR edges)");
+            println!("! {msg}");
+            push_log(&mut g.log, LogEntry::Msg(msg));
+        }
+        Event::Log(text) => {
+            println!("• {text}");
+            push_log(&mut g.log, LogEntry::Msg(text));
+        }
+        Event::Started => push_log(&mut g.log, LogEntry::Msg("STARTED".into())),
+        Event::Stopped => push_log(&mut g.log, LogEntry::Msg("STOPPED".into())),
     }
 }
 
@@ -326,58 +341,60 @@ fn handle_frame(
 /// Handshake: drain any backlog, send STOP and wait for `0xFC`, then
 /// send START and wait for `0xFB`. After this returns, the next byte
 /// read starts a fresh frame.
-fn sync(reader: &mut (dyn Read + Send), writer: &mut (dyn Write + Send)) -> anyhow::Result<()> {
-    let mut scratch = [0u8; 4096];
-
-    // 1. Drain everything currently buffered (250 ms is much longer
-    //    than any in-flight frame at 921600 baud).
-    let drain_deadline = Instant::now() + Duration::from_millis(250);
-    while Instant::now() < drain_deadline {
-        match reader.read(&mut scratch) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-    }
-
-    // 2. Send STOP, scan for 0xFC.
+/// Handshake. Send STOP, drain until the firmware stops talking,
+/// sanity-check that the last byte we saw was the STOPPED ack
+/// (0xFC). Then send START — the first byte from the firmware should
+/// be the STARTED ack (0xFB), and everything after it is fresh frame
+/// data going to the wire decoder.
+fn sync(
+    reader: &mut (dyn Read + Send),
+    writer: &mut (dyn Write + Send),
+) -> anyhow::Result<()> {
+    // 1. Tell the firmware to stop sending. Then read until quiet —
+    //    anything in the OS buffer plus anything the firmware was
+    //    mid-emitting plus the STOPPED ack will all flush. "Quiet" =
+    //    one serial-port read timeout (250 ms) without any bytes.
+    //    After it goes quiet, the last byte we saw must be 0xFC;
+    //    otherwise the firmware isn't speaking our protocol.
     writer.write_all(&[HOST_CMD_STOP])?;
     writer.flush()?;
-    scan_for(reader, 0xFC, "STOPPED ack")?;
+    if !drain_until_quiet(reader, 0xFC)? {
+        bail!("never saw STOPPED ack (0xFC) after sending STOP");
+    }
 
-    // 3. Send START, scan for 0xFB.
+    // 2. Send START. Everything from here on — including the FB
+    //    STARTED ack — flows to the main loop's wire decoder. No
+    //    explicit ack check; the wire decoder will surface FB as
+    //    Event::Started and we'll see it in the activity log.
     writer.write_all(&[HOST_CMD_START])?;
     writer.flush()?;
-    scan_for(reader, 0xFB, "STARTED ack")?;
-
-    eprintln!("reader: synced (STARTED)");
+    eprintln!("reader: synced (sent START)");
     Ok(())
 }
 
-/// Read bytes until `target` shows up. Discards anything before it.
-///
-/// TODO(host-sync): this also discards anything *after* the target in
-/// the same `read()` call. If the firmware emits a STARTED ack
-/// immediately followed by other frames (e.g. a log line), those frames
-/// get silently eaten when they land in the same packet as the ack.
-/// Fix: return the unconsumed tail and prepend it to the wire decoder's
-/// buffer before entering the main loop.
-fn scan_for(reader: &mut (dyn Read + Send), target: u8, what: &str) -> anyhow::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut buf = [0u8; 256];
-    while Instant::now() < deadline {
+/// Read from `reader` until it times out (no bytes arrived for one
+/// read-timeout window). Returns whether `needle` appeared anywhere
+/// in the drained bytes.
+fn drain_until_quiet(
+    reader: &mut (dyn Read + Send),
+    needle: u8,
+) -> anyhow::Result<bool> {
+    let mut saw_needle = false;
+    let mut buf = [0u8; 4096];
+    loop {
         match reader.read(&mut buf) {
-            Ok(0) => return Err(anyhow!("EOF while waiting for {what}")),
+            Ok(0) => return Ok(saw_needle),
             Ok(n) => {
-                if buf[..n].contains(&target) {
-                    return Ok(());
+                if buf[..n].contains(&needle) {
+                    saw_needle = true;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(saw_needle),
             Err(e) => return Err(e.into()),
         }
     }
-    Err(anyhow!("timeout waiting for {what}"))
 }
+
 
 /// Minimum window dimension considered a glyph worth keeping. Filters
 /// out thin status bars and 1-pixel-wide animation slivers.
