@@ -301,18 +301,10 @@ impl<'d> Capture<'d> {
         // Both channels should report the same count modulo the small
         // DMA arbitration lag. If they diverge, trim to the shorter
         // and accept that the trailing samples will appear next drain.
-        let n = pa_read.min(pb_read);
-
-        // Mask off bits not wired to display signals. Without this,
-        // noise on unused GPIOA/B inputs would break every RLE run.
-        for s in &mut out_pa[..n] {
-            *s &= PA_MASK;
-        }
-        for s in &mut out_pb[..n] {
-            *s &= PB_MASK;
-        }
-
-        n
+        // Caller masks each sample with PA_MASK / PB_MASK in the same
+        // pass it packs PA|PB into a u32, so the unmasked bits don't
+        // bounce through the stack twice.
+        pa_read.min(pb_read)
     }
 
     /// Wait until at least one paired sample is available, then drain

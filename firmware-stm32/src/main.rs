@@ -17,7 +17,7 @@ use embassy_sync::channel::Channel;
 use embassy_time::Timer;
 use panic_halt as _;
 
-use capture::{Capture, CapturePins};
+use capture::{Capture, CapturePins, PA_MASK, PB_MASK};
 use wire::{Encoder, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP, Sink};
 
 bind_interrupts!(struct Irqs {
@@ -242,7 +242,7 @@ async fn main(_spawner: Spawner) {
             // have landed in the rings but not yet crossed the
             // N/2 wake mark. The IRQ won't fire for them; only a
             // direct ring read can pick them up.
-            let n = match embassy_futures::select::select(
+            let mut n = match embassy_futures::select::select(
                 capture.read_available(&mut pa_buf, &mut pb_buf),
                 embassy_time::Timer::after_millis(10),
             )
@@ -275,19 +275,42 @@ async fn main(_spawner: Spawner) {
                     wire::encode_log(msg, &mut sink);
                 }
             } else {
-                for i in 0..n {
-                    // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
-                    // Packing into one u32 matches the on-wire LE byte
-                    // layout exactly; the host's permute layer
-                    // unpacks them per-board.
-                    let sample = pa_buf[i] as u32 | (pb_buf[i] as u32) << 16;
-                    encoder.feed(sample, &mut sink);
+                // Tight backlog drain. As long as the previous drain
+                // filled the chunk, the rings probably have more
+                // sitting behind it — keep draining synchronously
+                // until we get a partial chunk (rings ~empty). Avoids
+                // going through the executor + IRQ wakeup path per
+                // 128 samples when we're racing to catch up on a
+                // burst.
+                // PA in the low 16, PB in the high 16. Masking the
+                // packed u32 once is cheaper than masking pa/pb
+                // separately and lets us fuse the read-pack-mask-feed
+                // chain into a single pass over the stack buffers.
+                const SAMPLE_MASK: u32 = PA_MASK as u32 | ((PB_MASK as u32) << 16);
+                loop {
+                    for i in 0..n {
+                        // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
+                        // Packing into one u32 matches the on-wire LE byte
+                        // layout exactly; the host's permute layer
+                        // unpacks them per-board.
+                        let sample = (pa_buf[i] as u32 | (pb_buf[i] as u32) << 16) & SAMPLE_MASK;
+                        encoder.feed(sample, &mut sink);
+                    }
+
+                    if n < DRAIN_CHUNK {
+                        break;
+                    }
+                    n = capture.drain(&mut pa_buf, &mut pb_buf);
+                    if n == 0 {
+                        break;
+                    }
                 }
 
                 let dropped = capture.take_dropped();
                 if dropped > 0 {
                     wire::encode_overrun(dropped, &mut sink);
                 }
+
                 last_idle_log = embassy_time::Instant::now();
             }
 
