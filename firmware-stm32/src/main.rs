@@ -49,76 +49,28 @@ enum HostCmd {
     Stats,
 }
 
-/// `Sink` that stages each frame into a small scratch buffer, then
-/// flushes the whole frame straight into the BufferedUart's TX ring
-/// on `commit_frame()`. Spins until the full frame is enqueued —
-/// `BufferedUartTx::blocking_write` short-writes when the ring is
-/// near-full, and a torn frame would desync the host's parser. At
-/// 921600 baud the longest frame (~264 B) drains in ~2.9 ms worst
-/// case, well under the DMA ring's headroom.
-///
-/// Max frame size: with `wire::MAX_BLOCK = 16`, tag=0x01 with n=16
-/// → 2 + 4*16 = 66 B for data frames. LOG frames (tag=0xFE) can be
-/// up to 3 + 256 = 259 B for the longest log message. Round up to
-/// 264 for headroom — log frames are rare.
-const SINK_FRAME_MAX: usize = 264;
+/// `Sink` that pushes each byte straight into the BufferedUart's TX
+/// ring. `commit_frame` is a no-op: there's nothing to flush because
+/// each byte was already enqueued by `push`. When the ring is full,
+/// `push` spins on `blocking_write` until the ISR drains a byte
+/// (~10 µs at 921600 baud).
 struct UartSink<'a, 'd> {
     tx: &'a mut BufferedUartTx<'d>,
-    buf: [u8; SINK_FRAME_MAX],
-    n: usize,
-    overflowed: bool,
-    /// Total bytes discarded since boot — only counts frames that
-    /// exceeded SINK_FRAME_MAX (a code bug). Once a frame is staged,
-    /// commit_frame spins until the UART ring accepts it, so the
-    /// wire never sees a partial.
-    dropped: u32,
 }
 
 impl<'a, 'd> UartSink<'a, 'd> {
     fn new(tx: &'a mut BufferedUartTx<'d>) -> Self {
-        Self {
-            tx,
-            buf: [0; SINK_FRAME_MAX],
-            n: 0,
-            overflowed: false,
-            dropped: 0,
-        }
+        Self { tx }
     }
 }
 
 impl<'a, 'd> Sink for UartSink<'a, 'd> {
     fn push(&mut self, b: u8) -> bool {
-        if self.n < self.buf.len() {
-            self.buf[self.n] = b;
-            self.n += 1;
-            true
-        } else {
-            self.overflowed = true;
-            false
-        }
-    }
-
-    fn commit_frame(&mut self) {
-        let frame_size = self.n;
-        self.n = 0;
-        if self.overflowed {
-            self.dropped = self.dropped.saturating_add(frame_size as u32);
-            self.overflowed = false;
-            return;
-        }
-        // Spin until the whole frame is in the UART TX ring. The
-        // `embedded_io::Write::write` impl on `BufferedUartTx` calls
-        // the inherent `blocking_write` (private), which short-writes
-        // when only part of the ring is free and busy-waits for the
-        // ISR to drain a byte (~10 µs at 921600 baud) when full. A
-        // torn write would desync the host's parser, so the loop must
-        // run to completion.
-        let mut off = 0;
-        while off < frame_size {
-            match self.tx.write(&self.buf[off..frame_size]) {
-                Ok(0) => continue, // shouldn't happen — ring will drain
-                Ok(n) => off += n,
-                Err(_) => break, // UART error; host will reset us
+        loop {
+            match self.tx.write(&[b]) {
+                Ok(0) => continue, // ring full — spin until ISR drains
+                Ok(_) => return true,
+                Err(_) => return false, // UART error; host will reset us
             }
         }
     }
@@ -244,9 +196,9 @@ async fn main(_spawner: Spawner) {
         // reliable clock.
         let mut last_idle_log = embassy_time::Instant::now();
         // Auto-emit a STATS log line every ~5 s while streaming, so
-        // the host's run.log carries a trail of tx_dropped /
-        // cap_dropped counters even under sustained traffic (where
-        // the idle-tick heartbeat below never fires).
+        // the host's run.log carries a trail of cap_dropped counters
+        // even under sustained traffic (where the idle-tick heartbeat
+        // below never fires).
         let mut last_stats = embassy_time::Instant::now();
         loop {
             // Drain all pending host commands. Every START/STOP gets an
@@ -272,11 +224,7 @@ async fn main(_spawner: Spawner) {
                     }
                     HostCmd::Stats => {
                         let mut buf = [0u8; 64];
-                        let msg = fmt_stats(
-                            &mut buf,
-                            sink.dropped,
-                            capture.peek_dropped_total(),
-                        );
+                        let msg = fmt_stats(&mut buf, capture.peek_dropped_total());
                         wire::encode_log(msg, &mut sink);
                     }
                 }
@@ -338,19 +286,15 @@ async fn main(_spawner: Spawner) {
             // Auto-STATS heartbeat every ~5 s while streaming.
             if last_stats.elapsed() >= embassy_time::Duration::from_secs(5) {
                 let mut buf = [0u8; 64];
-                let msg = fmt_stats(
-                    &mut buf,
-                    sink.dropped,
-                    capture.peek_dropped_total(),
-                );
+                let msg = fmt_stats(&mut buf, capture.peek_dropped_total());
                 wire::encode_log(msg, &mut sink);
                 last_stats = embassy_time::Instant::now();
             }
 
             // Yield once per iteration so the LED + RX tasks get to
             // run. `read_chunk` only awaits cooperatively when its
-            // ring lacks samples, and `commit_frame` busy-waits on
-            // the UART ring; without this yield the cap loop can
+            // ring lacks samples, and `Sink::push` busy-waits on the
+            // UART ring; without this yield the cap loop can
             // monopolise the executor under sustained streaming.
             embassy_futures::yield_now().await;
         }
@@ -384,15 +328,13 @@ fn write_label_u16(buf: &mut [u8], label: &[u8], val: u16) -> usize {
     label.len() + 4
 }
 
-/// Format `"stats: tx_dropped=XXXXXXXX cap_dropped=XXXXXXXX"` into
-/// `buf` and return a &str. `buf` must be at least 44 bytes.
-fn fmt_stats(buf: &mut [u8], tx_dropped: u32, cap_dropped: u32) -> &str {
+/// Format `"stats: cap_dropped=XXXXXXXX"` into `buf` and return a
+/// &str. `buf` must be at least 28 bytes.
+fn fmt_stats(buf: &mut [u8], cap_dropped: u32) -> &str {
     let mut pos = 0;
     let prefix = b"stats: ";
     buf[..prefix.len()].copy_from_slice(prefix);
     pos += prefix.len();
-    pos += write_label_u32(&mut buf[pos..], b"tx_dropped=", tx_dropped);
-    buf[pos] = b' '; pos += 1;
     pos += write_label_u32(&mut buf[pos..], b"cap_dropped=", cap_dropped);
     core::str::from_utf8(&buf[..pos]).unwrap()
 }
