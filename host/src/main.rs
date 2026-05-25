@@ -284,9 +284,12 @@ fn dispatch_event(
         Event::Block(samples) => {
             print!("BLOCK n={:3}", samples.len());
             for s in &samples {
+                // Raw u32 sample alongside permuted view so we can see
+                // CS / noise bits that the data+is_data summary hides
+                // (helpful when the encoder fragments runs because of
+                // control-bit flicker even though data is constant).
                 let (data, is_data) = board.permute(*s);
-                // 'D' = data word, 'C' = command byte.
-                print!(" {}:{:04x}", if is_data { 'D' } else { 'C' }, data);
+                print!(" {:08x}({}:{:04x})", s, if is_data { 'D' } else { 'C' }, data);
             }
             println!();
             for s in samples {
@@ -299,8 +302,9 @@ fn dispatch_event(
         Event::Run { n, sample } => {
             let (data, is_data) = board.permute(sample);
             println!(
-                "RUN   n={:3} {}:{:04x}",
+                "RUN   n={:3} {:08x}({}:{:04x})",
                 n,
+                sample,
                 if is_data { 'D' } else { 'C' },
                 data
             );
