@@ -14,12 +14,13 @@
 
 /// Pico 2 W layout (firmware/src/main.rs + firmware/src/pio_capture.rs):
 ///   GPIO  0..15 → DB0..DB15
-///   GPIO 16     → CS
-///   GPIO 17     → DC  ← framed on this and it worked at the time.
-///                       The F103 bring-up later found the target's DC
-///                       line stuck high (CS-as-framing-bit), but we
-///                       have no Pico to re-verify against — leave
-///                       this as-is.
+///   GPIO 16     → CS  (sample bit 16)
+///   GPIO 17     → DC  (sample bit 17) ← framing signal
+///
+/// Verified by capturing the target's startup sequence: DC really does
+/// pulse low for each command byte (0x2A SET_COL, 0x2B SET_ROW, 0x2C
+/// MEM_WRITE, etc.), high for parameters and pixel data — standard
+/// 8080.
 pub fn permute_pico(sample: u32) -> (u16, bool) {
     let data = sample as u16;
     let is_data = sample & (1 << 17) != 0;

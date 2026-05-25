@@ -3,16 +3,14 @@
 //! Pin assignment (consecutive GPIOs required for `in pins, N`):
 //!
 //!     GPIO 0..=15 -> DB0..=DB15  (16-bit data bus)
-//!     GPIO 16     -> "D/C"  — name is a guess; this is the line the
-//!                             host uses for 8080 cmd/data framing.
-//!     GPIO 17     -> "CS"   — name is a guess; the other 8080 control
-//!                             line, captured but not used for framing.
-//!     GPIO 18     -> WR     — write strobe, sample trigger
+//!     GPIO 16     -> CS          — chip-select
+//!     GPIO 17     -> DC          — command/data, low for command bytes
+//!     GPIO 18     -> WR          — write strobe, sample trigger
 //!
 //! Each captured word in the RX FIFO is laid out (LSB first):
 //!
 //!     bit  17 16 15 ............... 0
-//!          CS DC DB15 ............ DB0
+//!          DC CS DB15 ............ DB0
 //!
 //! Upper 14 bits of the 32-bit word are zero (autopush threshold = 18).
 //!
@@ -291,7 +289,7 @@ pub struct CapturePins<'d> {
     pub db13: Peri<'d, embassy_rp::peripherals::PIN_13>,
     pub db14: Peri<'d, embassy_rp::peripherals::PIN_14>,
     pub db15: Peri<'d, embassy_rp::peripherals::PIN_15>,
-    pub dc: Peri<'d, embassy_rp::peripherals::PIN_16>,
-    pub cs: Peri<'d, embassy_rp::peripherals::PIN_17>,
+    pub cs: Peri<'d, embassy_rp::peripherals::PIN_16>,
+    pub dc: Peri<'d, embassy_rp::peripherals::PIN_17>,
     pub wr: Peri<'d, embassy_rp::peripherals::PIN_18>,
 }

@@ -6,11 +6,12 @@ the [target device display protocol reverse-engineering](../docs/display_notes.m
 Current state: PIO+DMA capture, streaming raw `(pa, pb)` samples to the
 host over USB CDC using the tagged wire protocol in
 [`docs/wire_protocol.md`](../docs/wire_protocol.md). On each WR rising
-edge the PIO captures `{CS, DC, DB15..DB0}` (18 bits) into a 32 KiB DMA
-ring; the firmware splits each sample into `pa = DB0..DB15` and
-`pb = {CS at bit 0, DC at bit 1}`, RLE-compresses consecutive identical
-pairs, and ships the byte stream out. The firmware boots quiet — send
-`0x01` (START) on the CDC link to begin streaming, `0x02` (STOP) to halt.
+edge the PIO captures `{DC, CS, DB15..DB0}` (18 bits, MSB first) into
+a 32 KiB DMA ring; the firmware splits each sample into
+`pa = DB0..DB15` and `pb = {CS at bit 0, DC at bit 1}`, RLE-compresses
+consecutive identical pairs, and ships the byte stream out. The
+firmware boots quiet — send `0x01` (START) on the CDC link to begin
+streaming, `0x02` (STOP) to halt.
 
 ## Toolchain setup
 
@@ -55,8 +56,8 @@ the START/STOP handshake and decodes the frames.
 | Pico GPIO | Function |
 |-----------|----------|
 | 0–15 | DB0–DB15 (16-bit data bus, must be consecutive for PIO `in pins, 16`) |
-| 16 | D/C (RS) |
-| 17 | CS |
+| 16 | CS |
+| 17 | D/C (RS) |
 | 18 | WR (write strobe — sample trigger) |
 | 22, 26–28 | spare |
 | 23, 24, 25, 29 | reserved for CYW43 wifi |
