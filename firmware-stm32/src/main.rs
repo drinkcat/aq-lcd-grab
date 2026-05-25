@@ -157,39 +157,48 @@ async fn main(_spawner: Spawner) {
     let mut sink = UartSink::new(&mut tx);
     wire::encode_log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
 
-    // LED task — visual liveness, also signals state.
-    let led_fut = async {
-        loop {
-            let interval = if STREAMING.load(core::sync::atomic::Ordering::Relaxed) {
-                100
-            } else {
-                500
-            };
-            led.toggle();
-            Timer::after_millis(interval).await;
-        }
-    };
+    // Disabled: trying to see if cap_fut alone gets higher
+    // throughput without contention from the executor having to wake
+    // these futures on their timers/IRQs.
+    //
+    // // LED task — visual liveness, also signals state.
+    // let led_fut = async {
+    //     loop {
+    //         let interval = if STREAMING.load(core::sync::atomic::Ordering::Relaxed) {
+    //             100
+    //         } else {
+    //             500
+    //         };
+    //         led.toggle();
+    //         Timer::after_millis(interval).await;
+    //     }
+    // };
+    //
+    // // UART RX task — single-byte commands from the host.
+    // let rx_fut = async {
+    //     let mut byte = [0u8; 1];
+    //     loop {
+    //         if <_ as Read>::read(&mut rx, &mut byte).await.is_err() {
+    //             continue;
+    //         }
+    //         let cmd = match byte[0] {
+    //             HOST_CMD_START => HostCmd::Start,
+    //             HOST_CMD_STOP => HostCmd::Stop,
+    //             HOST_CMD_STATS => HostCmd::Stats,
+    //             _ => continue, // unknown command, ignore
+    //         };
+    //         CMD_QUEUE.send(cmd).await;
+    //     }
+    // };
+    let _ = &led;
+    let _ = &rx;
 
-    // UART RX task — single-byte commands from the host.
-    let rx_fut = async {
-        let mut byte = [0u8; 1];
-        loop {
-            if <_ as Read>::read(&mut rx, &mut byte).await.is_err() {
-                continue;
-            }
-            let cmd = match byte[0] {
-                HOST_CMD_START => HostCmd::Start,
-                HOST_CMD_STOP => HostCmd::Stop,
-                HOST_CMD_STATS => HostCmd::Stats,
-                _ => continue, // unknown command, ignore
-            };
-            CMD_QUEUE.send(cmd).await;
-        }
-    };
-
-    // Capture-drain task — pulls samples, feeds encoder, handles state
-    // transitions and overrun reporting.
-    let mut state = StreamState::Stopped;
+    // PERF test: force-start streaming since rx_fut is disabled and
+    // no START command will ever arrive. Host parser still needs the
+    // STARTED ack to sync.
+    let mut state = StreamState::Streaming;
+    STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
+    wire::encode_started(&mut sink);
     let cap_fut = async {
         let mut samples = [0u32; DRAIN_CHUNK];
         // Time-based (not loop-tick-based) cadence for the periodic
@@ -202,6 +211,12 @@ async fn main(_spawner: Spawner) {
         // even under sustained traffic (where the idle-tick heartbeat
         // below never fires).
         let mut last_stats = embassy_time::Instant::now();
+        // DMA transfer-error event counters. take_dma_teif clears
+        // the hardware flags each call, so these are cumulative
+        // "events seen" counts since boot. Non-zero means a DMA
+        // request was lost mid-burst (AHB error) → samples missing.
+        let mut pa_teif_count: u32 = 0;
+        let mut pb_teif_count: u32 = 0;
         loop {
             // Drain all pending host commands. Every START/STOP gets an
             // ack even when it's a no-op for the current state — the
@@ -225,8 +240,13 @@ async fn main(_spawner: Spawner) {
                         wire::encode_stopped(&mut sink);
                     }
                     HostCmd::Stats => {
-                        let mut buf = [0u8; 64];
-                        let msg = fmt_stats(&mut buf, capture.peek_dropped_total());
+                        let mut buf = [0u8; 96];
+                        let msg = fmt_stats(
+                            &mut buf,
+                            capture.peek_dropped_total(),
+                            pa_teif_count,
+                            pb_teif_count,
+                        );
                         wire::encode_log(msg, &mut sink);
                     }
                 }
@@ -306,11 +326,22 @@ async fn main(_spawner: Spawner) {
 
             // Auto-STATS heartbeat every ~5 s while streaming.
             if last_stats.elapsed() >= embassy_time::Duration::from_secs(5) {
-                let mut buf = [0u8; 64];
-                let msg = fmt_stats(&mut buf, capture.peek_dropped_total());
+                let mut buf = [0u8; 96];
+                let msg = fmt_stats(
+                    &mut buf,
+                    capture.peek_dropped_total(),
+                    pa_teif_count,
+                    pb_teif_count,
+                );
                 wire::encode_log(msg, &mut sink);
                 last_stats = embassy_time::Instant::now();
             }
+
+            // Sample (and clear) DMA TEIF — accumulate event counts
+            // so a 5s heartbeat surfaces them via STATS.
+            let (pa_te, pb_te) = capture.take_dma_teif();
+            if pa_te { pa_teif_count = pa_teif_count.saturating_add(1); }
+            if pb_te { pb_teif_count = pb_teif_count.saturating_add(1); }
 
             // Yield once per iteration so LED + RX get scheduled.
             // `read_available` only awaits when both rings are empty;
@@ -321,7 +352,7 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-    join3(led_fut, rx_fut, cap_fut).await;
+    cap_fut.await;
 }
 
 /// Format `"cnt=XXXX pa_ndtr=XXXX pb_ndtr=XXXX"` into `buf` and
@@ -349,14 +380,18 @@ fn write_label_u16(buf: &mut [u8], label: &[u8], val: u16) -> usize {
     label.len() + 4
 }
 
-/// Format `"stats: cap_dropped=XXXXXXXX"` into `buf` and return a
-/// &str. `buf` must be at least 28 bytes.
-fn fmt_stats(buf: &mut [u8], cap_dropped: u32) -> &str {
+/// Format `"stats: cap_dropped=X pa_teif=X pb_teif=X"` into `buf`
+/// and return a &str. `buf` must be at least 64 bytes.
+fn fmt_stats(buf: &mut [u8], cap_dropped: u32, pa_teif: u32, pb_teif: u32) -> &str {
     let mut pos = 0;
     let prefix = b"stats: ";
     buf[..prefix.len()].copy_from_slice(prefix);
     pos += prefix.len();
     pos += write_label_u32(&mut buf[pos..], b"cap_dropped=", cap_dropped);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label_u32(&mut buf[pos..], b"pa_teif=", pa_teif);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label_u32(&mut buf[pos..], b"pb_teif=", pb_teif);
     core::str::from_utf8(&buf[..pos]).unwrap()
 }
 

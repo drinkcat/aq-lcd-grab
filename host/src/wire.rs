@@ -35,7 +35,7 @@ pub enum Event {
     /// A tag=0x01 block, expanded into raw samples.
     Block(Vec<u32>),
     /// A tag=0x02 run: `n` repetitions of `sample`.
-    Run { n: u8, sample: u32 },
+    Run { n: u16, sample: u32 },
     /// A tag=0xFD overrun marker: firmware lost `dropped` WR edges.
     Overrun { dropped: u32 },
     /// A tag=0xFE log frame: a UTF-8 line from the firmware.
@@ -107,12 +107,12 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             Ok(Some((Event::Block(samples), needed)))
         }
         TAG_RUN => {
-            if buf.len() < 6 {
+            if buf.len() < 7 {
                 return Ok(None);
             }
-            let n = buf[1];
-            let sample = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
-            Ok(Some((Event::Run { n, sample }, 6)))
+            let n = u16::from_le_bytes([buf[1], buf[2]]);
+            let sample = u32::from_le_bytes([buf[3], buf[4], buf[5], buf[6]]);
+            Ok(Some((Event::Run { n, sample }, 7)))
         }
         TAG_OVERRUN => {
             if buf.len() < 5 {

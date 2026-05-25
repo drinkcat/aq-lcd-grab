@@ -28,8 +28,10 @@ pub const HOST_CMD_START: u8 = 0x01;
 pub const HOST_CMD_STOP: u8 = 0x02;
 pub const HOST_CMD_STATS: u8 = 0x04;
 
-/// Maximum samples per tag=0x01 block or tag=0x02 run.
-const MAX_RUN: u8 = 255;
+/// Maximum samples per tag=0x02 run. u16-wide so a single RUN frame
+/// can absorb up to 65535 same-color pixels — at 667 kHz peak that's
+/// ~100 ms of solid fill in a single 7-byte frame.
+const MAX_RUN: u16 = u16::MAX;
 /// Cap unique-block frames at 16 samples instead of the protocol's
 /// maximum 255. Real target traffic is almost entirely RUN frames
 /// (long pixel splats); BLOCKs only carry short command/parameter
@@ -58,7 +60,7 @@ pub struct Encoder {
     /// Run-in-progress: the same packed sample repeated `run_len` times.
     /// `run_len` ∈ [0, MAX_RUN]; 0 means "no run pending".
     run_sample: u32,
-    run_len: u8,
+    run_len: u16,
     /// Block-of-unique-in-progress: up to MAX_BLOCK distinct samples
     /// that haven't been flushed yet. Stored as flat LE u32 (= the
     /// on-wire byte layout).
@@ -166,8 +168,9 @@ impl Encoder {
             return;
         }
         // run_len >= 2 → emit as tag=0x02.
+        let n = self.run_len.to_le_bytes();
         let bytes = self.run_sample.to_le_bytes();
-        sink.write(&[TAG_RUN, self.run_len, bytes[0], bytes[1], bytes[2], bytes[3]]);
+        sink.write(&[TAG_RUN, n[0], n[1], bytes[0], bytes[1], bytes[2], bytes[3]]);
         self.run_len = 0;
     }
 

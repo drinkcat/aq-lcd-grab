@@ -302,7 +302,7 @@ fn dispatch_event(
         Event::Run { n, sample } => {
             let (data, is_data) = board.permute(sample);
             println!(
-                "RUN   n={:3} {:08x}({}:{:04x})",
+                "RUN   n={:5} {:08x}({}:{:04x})",
                 n,
                 sample,
                 if is_data { 'D' } else { 'C' },

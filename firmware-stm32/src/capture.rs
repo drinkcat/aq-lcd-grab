@@ -474,4 +474,25 @@ impl<'d> Capture<'d> {
         let pb_ndtr = pac::DMA1.ch(6).ndtr().read().ndt();  // CH7
         (pa_ndtr, pb_ndtr)
     }
+
+    /// DEBUG: read + clear the DMA transfer-error flags for the PA/PB
+    /// channels. TEIF is set if the DMA hit an AHB error mid-transfer
+    /// — typically a bus arbitration loss the controller couldn't
+    /// retry, or a peripheral handshake violation. Should be 0 in
+    /// normal operation; nonzero means we lost samples and don't
+    /// know how many. Returns `(pa_teif, pb_teif)`.
+    pub fn take_dma_teif(&self) -> (bool, bool) {
+        let isr = pac::DMA1.isr().read();
+        let pa = isr.teif(4); // CH5
+        let pb = isr.teif(6); // CH7
+        // CTEIF is in the same bit positions in IFCR; writing a 1
+        // clears the corresponding TEIF in ISR.
+        if pa || pb {
+            pac::DMA1.ifcr().write(|w| {
+                if pa { w.set_teif(4, true); }
+                if pb { w.set_teif(6, true); }
+            });
+        }
+        (pa, pb)
+    }
 }
