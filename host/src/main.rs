@@ -29,10 +29,10 @@ enum Board {
 }
 
 impl Board {
-    fn permute(self, pa: u16, pb: u16) -> (u16, bool, bool) {
+    fn permute(self, sample: u32) -> (u16, bool, bool) {
         match self {
-            Board::Pico => permute::permute_pico(pa, pb),
-            Board::F103 => permute::permute_f103(pa, pb),
+            Board::Pico => permute::permute_pico(sample),
+            Board::F103 => permute::permute_f103(sample),
         }
     }
 }
@@ -277,15 +277,21 @@ fn dispatch_event(
 ) {
     match ev {
         Event::Block(samples) => {
-            for (pa, pb) in samples {
-                let (data, dc, _cs) = board.permute(pa, pb);
+            // Per-frame digest: shape + first/last sample. Skip the
+            // body itself — at full rate this would drown stdout.
+            if let (Some(&s0), Some(&sn)) = (samples.first(), samples.last()) {
+                println!("BLOCK n={} {:08x}..{:08x}", samples.len(), s0, sn);
+            }
+            for s in samples {
+                let (data, dc, _cs) = board.permute(s);
                 if let Some(tx) = bus.feed(data, dc) {
                     handle_frame(g, glyphs, dump_dir, seen, tx);
                 }
             }
         }
-        Event::Run { n, pa, pb } => {
-            let (data, dc, _cs) = board.permute(pa, pb);
+        Event::Run { n, sample } => {
+            println!("RUN   n={:3} {:08x}", n, sample);
+            let (data, dc, _cs) = board.permute(sample);
             if let Some(tx) = bus.feed_run(n as usize, data, dc) {
                 handle_frame(g, glyphs, dump_dir, seen, tx);
             }

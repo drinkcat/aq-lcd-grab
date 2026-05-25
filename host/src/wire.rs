@@ -25,12 +25,17 @@ pub const HOST_CMD_START: u8 = 0x01;
 pub const HOST_CMD_STOP: u8 = 0x02;
 
 /// One decoded event from the wire.
+///
+/// Sample layout: low 16 bits = `pa` (GPIOA->IDR), high 16 bits = `pb`
+/// (GPIOB->IDR). Matches the firmware's packed-u32 encoder exactly —
+/// the on-wire bytes are `to_le_bytes()` of this u32. Per-board
+/// permute layer splits/unscrambles into (data, dc, cs).
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// A tag=0x01 block, expanded into raw `(pa, pb)` samples.
-    Block(Vec<(u16, u16)>),
-    /// A tag=0x02 run: `n` repetitions of `(pa, pb)`.
-    Run { n: u8, pa: u16, pb: u16 },
+    /// A tag=0x01 block, expanded into raw samples.
+    Block(Vec<u32>),
+    /// A tag=0x02 run: `n` repetitions of `sample`.
+    Run { n: u8, sample: u32 },
     /// A tag=0xFD overrun marker: firmware lost `dropped` WR edges.
     Overrun { dropped: u32 },
     /// A tag=0xFE log frame: a UTF-8 line from the firmware.
@@ -96,9 +101,8 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             let mut samples = Vec::with_capacity(n);
             for i in 0..n {
                 let off = 2 + 4 * i;
-                let pa = u16::from_le_bytes([buf[off], buf[off + 1]]);
-                let pb = u16::from_le_bytes([buf[off + 2], buf[off + 3]]);
-                samples.push((pa, pb));
+                let s = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+                samples.push(s);
             }
             Ok(Some((Event::Block(samples), needed)))
         }
@@ -107,9 +111,8 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
                 return Ok(None);
             }
             let n = buf[1];
-            let pa = u16::from_le_bytes([buf[2], buf[3]]);
-            let pb = u16::from_le_bytes([buf[4], buf[5]]);
-            Ok(Some((Event::Run { n, pa, pb }, 6)))
+            let sample = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+            Ok(Some((Event::Run { n, sample }, 6)))
         }
         TAG_OVERRUN => {
             if buf.len() < 5 {
