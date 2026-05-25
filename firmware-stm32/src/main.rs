@@ -54,19 +54,63 @@ enum HostCmd {
     Stop,
 }
 
-/// `Sink` impl that pushes into the TX queue, dropping bytes if full.
+/// `Sink` that stages each frame into a small scratch buffer, then
+/// atomically pushes the whole frame into the TX queue on
+/// `commit_frame()`. If the queue can't fit the frame, the whole frame
+/// is discarded — never a partial. Essential for wire-format integrity:
+/// a half-emitted frame would desync the host's parser.
+///
+/// Max frame size is bounded by tag=0x01 with n=255 → 2 + 4*255 = 1022 B.
+/// Round up to 1024 for headroom.
+const SINK_FRAME_MAX: usize = 1024;
 struct QueueSink {
+    buf: [u8; SINK_FRAME_MAX],
+    n: usize,
+    overflowed: bool,
+    /// Total bytes discarded since boot.
     dropped: u32,
+}
+
+impl QueueSink {
+    const fn new() -> Self {
+        Self {
+            buf: [0; SINK_FRAME_MAX],
+            n: 0,
+            overflowed: false,
+            dropped: 0,
+        }
+    }
 }
 
 impl Sink for QueueSink {
     fn push(&mut self, b: u8) -> bool {
-        match TX_QUEUE.try_send(b) {
-            Ok(()) => true,
-            Err(_) => {
-                self.dropped = self.dropped.saturating_add(1);
-                false
-            }
+        if self.n < self.buf.len() {
+            self.buf[self.n] = b;
+            self.n += 1;
+            true
+        } else {
+            self.overflowed = true;
+            false
+        }
+    }
+
+    fn commit_frame(&mut self) {
+        let frame_size = self.n;
+        self.n = 0;
+        if self.overflowed {
+            self.dropped = self.dropped.saturating_add(frame_size as u32);
+            self.overflowed = false;
+            return;
+        }
+        // All-or-nothing: only enqueue when the whole frame fits, so
+        // the queue never carries a torn frame.
+        if TX_QUEUE.capacity() - TX_QUEUE.len() < frame_size {
+            self.dropped = self.dropped.saturating_add(frame_size as u32);
+            return;
+        }
+        for &b in &self.buf[..frame_size] {
+            // Pre-checked free slots, so try_send can't fail.
+            let _ = TX_QUEUE.try_send(b);
         }
     }
 }
@@ -136,14 +180,14 @@ async fn main(_spawner: Spawner) {
     let mut capture = Capture::new(
         p.TIM2,
         CapturePins { wr_etr: p.PA0 },
-        p.DMA1_CH5, // TIM2_CH1 -> PA ring
-        p.DMA1_CH2, // TIM2_UP  -> PB ring
+        p.DMA1_CH5, // TIM2_CH1 (input capture on TI1) -> PA ring
+        p.DMA1_CH7, // TIM2_CH2 (input capture on TI1, alt) -> PB ring
         pa_buf,
         pb_buf,
     );
 
     let mut encoder = Encoder::default();
-    let mut sink = QueueSink { dropped: 0 };
+    let mut sink = QueueSink::new();
     wire::encode_log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
 
     // LED task — visual liveness, also signals state.
@@ -218,18 +262,6 @@ async fn main(_spawner: Spawner) {
                             STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
                         }
                         wire::encode_started(&mut sink);
-                        // DEBUG: delay then dump SMCR/CR1/DIER/MAPR.
-                        // The host's sync `scan_for` reads up to 256
-                        // bytes looking for 0xFB and discards the
-                        // tail; sleep so we fall on the other side of
-                        // that read.
-                        Timer::after_millis(100).await;
-                        let (smcr, cr1) = capture.peek_smcr_cr1();
-                        let dier = capture.peek_dier();
-                        let mapr = capture.peek_afio_mapr();
-                        let mut buf = [0u8; 64];
-                        let msg = fmt_regs4(&mut buf, smcr, cr1, dier, mapr);
-                        wire::encode_log(msg, &mut sink);
                     }
                     HostCmd::Stop => {
                         if state == StreamState::Streaming {
@@ -280,13 +312,16 @@ async fn main(_spawner: Spawner) {
             if n == 0 {
                 idle_ticks = idle_ticks.wrapping_add(1);
                 if idle_ticks.is_multiple_of(2500) {
-                    // ~5 s heartbeat when idle. Include TIM2->CNT so
-                    // we can tell "no edges arriving" from "edges
-                    // arrive but DMA isn't moving them."
+                    // ~5 s heartbeat. Dump TIM2->CNT plus the NDTR
+                    // remaining-transfer counters for the two DMA
+                    // channels. If CNT advances between ticks, ETR is
+                    // counting WR edges. If NDTR decrements, DMA is
+                    // firing.
                     if state == StreamState::Streaming {
                         let cnt = capture.peek_cnt();
-                        let mut buf = [0u8; 16];
-                        let msg = fmt_idle(&mut buf, cnt);
+                        let (pa_ndtr, pb_ndtr) = capture.peek_dma_ndtr();
+                        let mut buf = [0u8; 48];
+                        let msg = fmt_idle3(&mut buf, cnt, pa_ndtr, pb_ndtr);
                         wire::encode_log(msg, &mut sink);
                     }
                 }
@@ -300,65 +335,28 @@ async fn main(_spawner: Spawner) {
     join(join3(led_fut, tx_fut, rx_fut), cap_fut).await;
 }
 
-/// Format a u16 as `"idle cnt=XXXX"` into `buf` and return a &str.
-/// `buf` must be at least 14 bytes.
-fn fmt_idle(buf: &mut [u8], cnt: u16) -> &str {
-    const PREFIX: &[u8] = b"idle cnt=";
-    buf[..PREFIX.len()].copy_from_slice(PREFIX);
-    for i in 0..4 {
-        let nibble = (cnt >> (12 - 4 * i)) & 0xF;
-        buf[PREFIX.len() + i] = if nibble < 10 {
-            b'0' + nibble as u8
-        } else {
-            b'a' + (nibble - 10) as u8
-        };
-    }
-    core::str::from_utf8(&buf[..PREFIX.len() + 4]).unwrap()
-}
-
-/// Format `"smcr=XXXXXXXX cr1=XXXXXXXX"` into `buf` and return a &str.
-/// `buf` must be at least 30 bytes.
-fn fmt_regs(buf: &mut [u8], smcr: u32, cr1: u32) -> &str {
+/// Format `"cnt=XXXX pa_ndtr=XXXX pb_ndtr=XXXX"` into `buf` and
+/// return a &str. `buf` must be at least 36 bytes.
+fn fmt_idle3(buf: &mut [u8], cnt: u16, pa_ndtr: u16, pb_ndtr: u16) -> &str {
     let mut pos = 0;
-    pos += write_label(&mut buf[pos..], b"smcr=", smcr);
+    pos += write_label_u16(&mut buf[pos..], b"cnt=", cnt);
     buf[pos] = b' '; pos += 1;
-    pos += write_label(&mut buf[pos..], b"cr1=", cr1);
+    pos += write_label_u16(&mut buf[pos..], b"pa_ndtr=", pa_ndtr);
+    buf[pos] = b' '; pos += 1;
+    pos += write_label_u16(&mut buf[pos..], b"pb_ndtr=", pb_ndtr);
     core::str::from_utf8(&buf[..pos]).unwrap()
 }
 
-/// Like fmt_regs but also includes DIER.
-fn fmt_regs3(buf: &mut [u8], smcr: u32, cr1: u32, dier: u32) -> &str {
-    let mut pos = 0;
-    pos += write_label(&mut buf[pos..], b"smcr=", smcr);
-    buf[pos] = b' '; pos += 1;
-    pos += write_label(&mut buf[pos..], b"cr1=", cr1);
-    buf[pos] = b' '; pos += 1;
-    pos += write_label(&mut buf[pos..], b"dier=", dier);
-    core::str::from_utf8(&buf[..pos]).unwrap()
-}
-
-/// fmt_regs3 + AFIO MAPR.
-fn fmt_regs4(buf: &mut [u8], smcr: u32, cr1: u32, dier: u32, mapr: u32) -> &str {
-    let mut pos = 0;
-    pos += write_label(&mut buf[pos..], b"smcr=", smcr);
-    buf[pos] = b' '; pos += 1;
-    pos += write_label(&mut buf[pos..], b"cr1=", cr1);
-    buf[pos] = b' '; pos += 1;
-    pos += write_label(&mut buf[pos..], b"dier=", dier);
-    buf[pos] = b' '; pos += 1;
-    pos += write_label(&mut buf[pos..], b"mapr=", mapr);
-    core::str::from_utf8(&buf[..pos]).unwrap()
-}
-
-fn write_label(buf: &mut [u8], label: &[u8], val: u32) -> usize {
+fn write_label_u16(buf: &mut [u8], label: &[u8], val: u16) -> usize {
     buf[..label.len()].copy_from_slice(label);
-    for i in 0..8 {
-        let nibble = (val >> (28 - 4 * i)) & 0xF;
+    for i in 0..4 {
+        let nibble = (val >> (12 - 4 * i)) & 0xF;
         buf[label.len() + i] = if nibble < 10 {
             b'0' + nibble as u8
         } else {
             b'a' + (nibble - 10) as u8
         };
     }
-    label.len() + 8
+    label.len() + 4
 }
+

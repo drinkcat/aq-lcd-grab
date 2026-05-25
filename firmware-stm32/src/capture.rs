@@ -32,7 +32,7 @@ use embassy_stm32::gpio::{Input, Pull};
 use embassy_stm32::pac;
 use embassy_stm32::peripherals::{PA0, TIM2};
 use embassy_stm32::timer::low_level::Timer;
-use embassy_stm32::timer::{Ch1, Dma as TimDma, UpDma};
+use embassy_stm32::timer::{Ch1, Ch2, Dma as TimDma};
 use embassy_stm32::Peri;
 
 /// Mask of PA bits that are wired to the display flex. Bits outside
@@ -87,7 +87,7 @@ impl<'d> Capture<'d> {
         tim: Peri<'d, TIM2>,
         pins: CapturePins<'d>,
         pa_dma: Peri<'d, impl TimDma<TIM2, Ch1>>,
-        pb_dma: Peri<'d, impl UpDma<TIM2>>,
+        pb_dma: Peri<'d, impl TimDma<TIM2, Ch2>>,
         pa_buf: &'d mut [u16],
         pb_buf: &'d mut [u16],
     ) -> Self {
@@ -145,35 +145,48 @@ impl<'d> Capture<'d> {
             w.set_ece(true); // external clock mode 2: clock = ETRF
         });
 
-        // ARR=0 → every ETR pulse increments past 0 → UEV fires.
-        r.arr().write(|w| w.set_arr(0));
+        // ARR isn't load-bearing here: we don't depend on UEV. Keep
+        // it at 0xFFFF so the counter has room to wrap without
+        // weirdness.
+        r.arr().write(|w| w.set_arr(0xFFFF));
         r.psc().write_value(0);
         r.cnt().write(|w| w.set_cnt(0));
 
-        // CC1 = input capture from TI1 (same pin as ETR — on TIM2 the
-        // pin is multiplexed as CH1_ETR, and both functions are
-        // *inputs* of the same pin, so this works alongside ECE).
-        // Capture on every rising edge → CC1IF set → CC1DE fires the
-        // second DMA channel.
+        // BOTH CC1 and CC2 are configured as input-capture on TI1
+        // (the same pin as ETR — TIM2's CH1_ETR is multiplexed and
+        // both ETR-clocking and input-capture read the same pin).
+        // CC1 fires CC1DE → DMA1_CH5 → reads GPIOA->IDR.
+        // CC2 (mapped to TI1 via the "alternate" CCS=TI3 setting)
+        // fires CC2DE → DMA1_CH7 → reads GPIOB->IDR.
+        // Both DMA transfers happen on the same WR edge so the rings
+        // stay paired sample-for-sample.
         //
-        // We tried CC1 in output-compare mode with CCR=0 to get a
-        // "match on every count" event, but with ARR=0 the counter
-        // never transitions into the match, so CC1IF never fires.
-        // Input capture has no such gotcha.
+        // History: an earlier design used UEV→UDE→DMA1_CH2 for one
+        // half and CC1→CC1DE for the other, with ARR=0 to make UEV
+        // fire on every ETR edge. On F103 TIM2 (and probably others),
+        // ARR=0 + ECE silently fails to fire UDE — measured 0 DMA
+        // transfers in 30 s while CC1IF/CC1DE was happily firing
+        // every edge. Switching to dual input-capture sidesteps the
+        // issue entirely.
         r.ccmr_input(0).modify(|w| {
-            w.set_ccs(0, pac::timer::vals::CcmrInputCcs::TI4); // = 0b01: CC1 ← TI1
+            // CC1 ← TI1 (normal). CCS=01.
+            w.set_ccs(0, pac::timer::vals::CcmrInputCcs::TI4);
             w.set_icf(0, pac::timer::vals::FilterValue::NO_FILTER);
-            w.set_icpsc(0, 0); // no prescaler
+            w.set_icpsc(0, 0);
+            // CC2 ← TI1 (alternate mapping, switches 2↔1). CCS=10.
+            w.set_ccs(1, pac::timer::vals::CcmrInputCcs::TI3);
+            w.set_icf(1, pac::timer::vals::FilterValue::NO_FILTER);
+            w.set_icpsc(1, 0);
         });
         r.ccer().modify(|w| {
-            w.set_ccp(0, false); // rising edge
-            w.set_cce(0, true);  // enable capture
+            w.set_ccp(0, false); w.set_cce(0, true);  // CC1 rising, enable
+            w.set_ccp(1, false); w.set_cce(1, true);  // CC2 rising, enable
         });
 
-        // Enable both DMA request lines.
+        // Enable both CC DMA request lines.
         r.dier().modify(|w| {
-            w.set_ude(true);
             w.set_ccde(0, true);
+            w.set_ccde(1, true);
         });
 
         // Force an update event so the prescaler/ARR shadow registers
@@ -293,5 +306,15 @@ impl<'d> Capture<'d> {
     /// for our ETR=PA0 routing. Anything else means ETR is not on PA0.
     pub fn peek_afio_mapr(&self) -> u32 {
         pac::AFIO.mapr().read().0
+    }
+
+    /// DEBUG: NDTR (remaining transfers) for the PA-ring DMA channel
+    /// (TIM2_CH1 → DMA1_CH5) and PB-ring DMA channel (TIM2_CH2 →
+    /// DMA1_CH7). If these decrement over time, DMA is firing.
+    pub fn peek_dma_ndtr(&self) -> (u16, u16) {
+        // BDMA channels are 1-indexed in hardware; ch(n) is 0-indexed.
+        let pa_ndtr = pac::DMA1.ch(4).ndtr().read().ndt();  // CH5
+        let pb_ndtr = pac::DMA1.ch(6).ndtr().read().ndt();  // CH7
+        (pa_ndtr, pb_ndtr)
     }
 }
