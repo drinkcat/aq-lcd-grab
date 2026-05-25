@@ -30,7 +30,14 @@ pub const HOST_CMD_STATS: u8 = 0x04;
 
 /// Maximum samples per tag=0x01 block or tag=0x02 run.
 const MAX_RUN: u8 = 255;
-const MAX_BLOCK: usize = 255;
+/// Cap unique-block frames at 16 samples instead of the protocol's
+/// maximum 255. Real target traffic is almost entirely RUN frames
+/// (long pixel splats); BLOCKs only carry short command/parameter
+/// bursts which fit in 16 samples easily. The win is RAM: encoder
+/// state and the sink's frame-staging scratch drop from ~1 KiB each
+/// to ~66 B, freeing SRAM for the capture rings. The wire protocol's
+/// host parser doesn't care about the upper bound.
+const MAX_BLOCK: usize = 16;
 
 /// Byte sink: where the encoder pushes wire bytes.
 ///

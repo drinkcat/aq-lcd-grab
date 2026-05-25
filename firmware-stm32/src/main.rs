@@ -13,6 +13,7 @@ use embassy_stm32::{bind_interrupts, peripherals, Config};
 use embedded_io_async::{Read, Write};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::pipe::Pipe;
 use embassy_time::Timer;
 use panic_halt as _;
 
@@ -23,12 +24,15 @@ bind_interrupts!(struct Irqs {
     USART1 => BufferedInterruptHandler<peripherals::USART1>;
 });
 
-/// Outbound byte queue (encoder → UART TX task). 4 KiB holds ~5 ms of
-/// peak-rate output at 921600 baud, plenty for the encoder to write a
-/// few frames ahead of the wire.
-const TX_QUEUE_CAP: usize = 4096;
-type TxQueue = Channel<ThreadModeRawMutex, u8, TX_QUEUE_CAP>;
-static TX_QUEUE: TxQueue = Channel::new();
+/// Outbound byte pipe (encoder → UART TX task). 2 KiB holds ~22 ms
+/// at the 921600-baud drain rate (≈92 kB/s) — plenty for the encoder
+/// to stage many small frames ahead of the wire.
+///
+/// `Pipe<u8>` instead of `Channel<u8>`: lets the sink push whole
+/// frames atomically via `try_write_all` (no per-byte locking) and
+/// lets the TX task bulk-read into a stack scratch in one shot.
+const TX_PIPE_CAP: usize = 2048;
+static TX_PIPE: Pipe<ThreadModeRawMutex, TX_PIPE_CAP> = Pipe::new();
 
 /// Commands from RX task to capture task. The protocol mandates an ack
 /// for every START/STOP — even when it's a no-op for the current
@@ -61,9 +65,11 @@ enum HostCmd {
 /// is discarded — never a partial. Essential for wire-format integrity:
 /// a half-emitted frame would desync the host's parser.
 ///
-/// Max frame size is bounded by tag=0x01 with n=255 → 2 + 4*255 = 1022 B.
-/// Round up to 1024 for headroom.
-const SINK_FRAME_MAX: usize = 1024;
+/// Max frame size: with `wire::MAX_BLOCK = 16`, tag=0x01 with n=16
+/// → 2 + 4*16 = 66 B for data frames. LOG frames (tag=0xFE) can be
+/// up to 3 + 256 = 259 B for the longest log message. Round up to
+/// 264 for headroom — log frames are rare.
+const SINK_FRAME_MAX: usize = 264;
 struct QueueSink {
     buf: [u8; SINK_FRAME_MAX],
     n: usize,
@@ -104,22 +110,30 @@ impl Sink for QueueSink {
             return;
         }
         // All-or-nothing: only enqueue when the whole frame fits, so
-        // the queue never carries a torn frame.
-        if TX_QUEUE.capacity() - TX_QUEUE.len() < frame_size {
+        // the pipe never carries a torn frame.
+        if TX_PIPE.free_capacity() < frame_size {
             self.dropped = self.dropped.saturating_add(frame_size as u32);
             return;
         }
-        for &b in &self.buf[..frame_size] {
-            // Pre-checked free slots, so try_send can't fail.
-            let _ = TX_QUEUE.try_send(b);
+        // `try_write` can short-write near the ring's wrap point
+        // (returns the contiguous free region size). Loop until done —
+        // free_capacity was pre-checked so progress is guaranteed.
+        let mut off = 0;
+        while off < frame_size {
+            match TX_PIPE.try_write(&self.buf[off..frame_size]) {
+                Ok(n) => off += n,
+                Err(_) => unreachable!("free_capacity was pre-checked"),
+            }
         }
     }
 }
 
-/// Capture ring lengths. 1024 half-words = 2 KiB per ring = 4 KiB
-/// total. At 667 kHz peak, 1024 samples ≈ 1.5 ms of headroom — enough
-/// to ride out a UART stall while we flush a frame.
-const RING_LEN: usize = 1024;
+/// Capture ring lengths. 2048 half-words = 4 KiB per ring = 8 KiB
+/// total. At 667 kHz peak, 2048 samples ≈ 3 ms of headroom — twice
+/// the original 1.5 ms and enough to ride out the drain-thread
+/// starvation we were hitting. Could go higher but F103C8 only has
+/// 20 KiB SRAM and we also need TX_PIPE + UART buffers.
+const RING_LEN: usize = 2048;
 static mut PA_BUF: [u16; RING_LEN] = [0; RING_LEN];
 static mut PB_BUF: [u16; RING_LEN] = [0; RING_LEN];
 
@@ -157,7 +171,7 @@ async fn main(_spawner: Spawner) {
     // commands are single-byte and rare. TX is also interrupt-driven;
     // at 921600 baud the ~10 µs ISR cadence is well below the 64 MHz
     // CPU's critical-path budget.
-    static mut UART_TX_BUF: [u8; 4096] = [0; 4096];
+    static mut UART_TX_BUF: [u8; 1024] = [0; 1024];
     static mut UART_RX_BUF: [u8; 64] = [0; 64];
     let (tx_buf, rx_buf) = unsafe {
         (
@@ -204,36 +218,23 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-    // UART TX task — drains the byte queue out the wire.
+    // UART TX task — drains TX_PIPE out the wire.
+    //
+    // `Pipe::read` returns whatever's buffered, up to the slice size.
+    // We loop the BufferedUart `write` because it can short-write
+    // (returns just what fit in the interrupt-side TX ring);
+    // without the inner loop bytes would silently disappear and
+    // the host parser would desync.
     let tx_fut = async {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 64];
         loop {
-            // Block for the first byte, then opportunistically batch.
-            buf[0] = TX_QUEUE.receive().await;
-            let mut n = 1;
-            while n < buf.len() {
-                match TX_QUEUE.try_receive() {
-                    Ok(b) => {
-                        buf[n] = b;
-                        n += 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-            // `write` can short-write (returns whatever fit in the
-            // interrupt-side TX ring), so loop until everything's in.
-            // Without this, bytes silently disappear mid-frame and the
-            // host parser desyncs.
+            let n = TX_PIPE.read(&mut buf).await;
             let mut off = 0;
             while off < n {
                 match <_ as Write>::write(&mut tx, &buf[off..n]).await {
                     Ok(0) => break, // shouldn't happen, but don't spin
                     Ok(w) => off += w,
-                    Err(_) => {
-                        // UART error is fatal-ish; host will reset us.
-                        // Drop the rest of the frame so we don't deadlock.
-                        break;
-                    }
+                    Err(_) => break, // UART error; host will reset us
                 }
             }
         }
@@ -263,6 +264,11 @@ async fn main(_spawner: Spawner) {
         let mut pa_buf = [0u16; DRAIN_CHUNK];
         let mut pb_buf = [0u16; DRAIN_CHUNK];
         let mut idle_ticks: u32 = 0;
+        // Auto-emit a STATS log line every ~5 s while streaming, so
+        // the host's run.log carries a trail of tx_dropped /
+        // cap_dropped counters even under sustained traffic (where
+        // the idle-tick heartbeat below never fires).
+        let mut last_stats = embassy_time::Instant::now();
         loop {
             // Drain all pending host commands. Every START/STOP gets an
             // ack even when it's a no-op for the current state — the
@@ -295,6 +301,20 @@ async fn main(_spawner: Spawner) {
                         wire::encode_log(msg, &mut sink);
                     }
                 }
+            }
+
+            // Auto-STATS heartbeat every ~5 s while streaming.
+            if state == StreamState::Streaming
+                && last_stats.elapsed() >= embassy_time::Duration::from_secs(5)
+            {
+                let mut buf = [0u8; 64];
+                let msg = fmt_stats(
+                    &mut buf,
+                    sink.dropped,
+                    capture.peek_dropped_total(),
+                );
+                wire::encode_log(msg, &mut sink);
+                last_stats = embassy_time::Instant::now();
             }
 
             // Drain rings regardless of state — keeping them empty

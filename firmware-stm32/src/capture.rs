@@ -206,9 +206,16 @@ impl<'d> Capture<'d> {
         r.egr().write(|w| w.set_ug(true));
 
         // Clear any pending status flags from the EGR-triggered UEV.
+        // Both CC1IF *and* CC2IF — missing the CC2 clear leaves a
+        // stale interrupt flag pending, which the DMA controller
+        // consumes as soon as we arm DMA1_CH7. That puts one ghost
+        // sample at the head of the PB ring, shifting it by one
+        // relative to PA for the rest of the session — every
+        // captured (pa, pb) pair is mismatched.
         r.sr().modify(|w| {
             w.set_uif(false);
             w.set_ccif(0, false);
+            w.set_ccif(1, false);
         });
 
         // Hand the rings the green light.
@@ -250,31 +257,44 @@ impl<'d> Capture<'d> {
         let pa_result = self.pa_ring.read(&mut out_pa[..n]);
         let pb_result = self.pb_ring.read(&mut out_pb[..n]);
 
-        let pa_read = match pa_result {
-            Ok((read, _remaining)) => read,
-            Err(_) => {
-                // Overrun on PA ring. We can't tell exactly how many
-                // were lost; conservatively count one full ring's worth
-                // and resync by clearing both sides.
-                let n = self.pa_ring.capacity() as u32;
-                self.dropped = self.dropped.saturating_add(n);
-                self.dropped_total = self.dropped_total.saturating_add(n);
-                self.pa_ring.clear();
-                self.pb_ring.clear();
-                return 0;
-            }
-        };
-        let pb_read = match pb_result {
-            Ok((read, _remaining)) => read,
-            Err(_) => {
-                let n = self.pb_ring.capacity() as u32;
-                self.dropped = self.dropped.saturating_add(n);
-                self.dropped_total = self.dropped_total.saturating_add(n);
-                self.pa_ring.clear();
-                self.pb_ring.clear();
-                return 0;
-            }
-        };
+        // On overrun in *either* ring, do a hard resync: stop TIM2
+        // (so no more edges trigger DMA), clear both rings (which
+        // re-anchors their read indices to the now-frozen DMA write
+        // positions), restart TIM2. By gating the resync on the
+        // *trigger source* rather than the DMA channels themselves,
+        // we guarantee both rings get re-anchored to the same
+        // edge-boundary — without this, the two soft-reset reads
+        // sample each DMA's write position at non-atomic moments
+        // and end up off by ±1 sample, causing every paired sample
+        // from then on to come from two different WR edges.
+        let overrun = pa_result.is_err() || pb_result.is_err();
+        if overrun {
+            let r = self._tim.regs_gp16();
+            // Stop the counter; no more ETR clocks → no more DMA.
+            r.cr1().modify(|w| w.set_cen(false));
+            // Clear any pending CC1IF / CC2IF / UIF status flags —
+            // otherwise on restart the DMA channels can each consume
+            // one stale interrupt flag as a "ghost" transfer,
+            // re-introducing the pair drift we just resynced away.
+            r.sr().modify(|w| {
+                w.set_uif(false);
+                w.set_ccif(0, false);
+                w.set_ccif(1, false);
+            });
+            // Account a full ring's worth of drops (we can't tell
+            // exactly how many were lost).
+            let n = self.pa_ring.capacity() as u32;
+            self.dropped = self.dropped.saturating_add(n);
+            self.dropped_total = self.dropped_total.saturating_add(n);
+            self.pa_ring.clear();
+            self.pb_ring.clear();
+            // Restart the counter — next WR edge fires both DMAs
+            // from a known-empty state.
+            self._tim.regs_gp16().cr1().modify(|w| w.set_cen(true));
+            return 0;
+        }
+        let pa_read = pa_result.map(|(r, _)| r).unwrap_or(0);
+        let pb_read = pb_result.map(|(r, _)| r).unwrap_or(0);
 
         // Both channels should report the same count modulo the small
         // DMA arbitration lag. If they diverge, trim to the shorter
