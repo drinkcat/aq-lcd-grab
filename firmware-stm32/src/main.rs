@@ -17,7 +17,7 @@ use embassy_sync::channel::Channel;
 use embassy_time::Timer;
 use panic_halt as _;
 
-use capture::{Capture, CapturePins, PA_MASK, PB_MASK};
+use capture::{Capture, CapturePins, RING_CAP};
 use wire::{Encoder, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP, Sink};
 
 bind_interrupts!(struct Irqs {
@@ -83,9 +83,10 @@ impl<'a, 'd> Sink for UartSink<'a, 'd> {
 /// total. At 667 kHz peak, 4096 samples ≈ 6 ms of headroom for the
 /// drain task to keep up. Can't go higher: F103C8 has 20 KiB SRAM
 /// total and we still need UART_TX_BUF + stack + .bss.
-const RING_LEN: usize = 4096;
-static mut PA_BUF: [u16; RING_LEN] = [0; RING_LEN];
-static mut PB_BUF: [u16; RING_LEN] = [0; RING_LEN];
+/// `Capture::fast_drain` hardcodes the modulus mask to RING_CAP, so
+/// these statics must match it.
+static mut PA_BUF: [u16; RING_CAP] = [0; RING_CAP];
+static mut PB_BUF: [u16; RING_CAP] = [0; RING_CAP];
 
 /// Drain chunk: how many paired samples we pull from the rings per
 /// poll. Small enough to keep latency tight, large enough to amortise
@@ -190,8 +191,7 @@ async fn main(_spawner: Spawner) {
     // transitions and overrun reporting.
     let mut state = StreamState::Stopped;
     let cap_fut = async {
-        let mut pa_buf = [0u16; DRAIN_CHUNK];
-        let mut pb_buf = [0u16; DRAIN_CHUNK];
+        let mut samples = [0u32; DRAIN_CHUNK];
         // Time-based (not loop-tick-based) cadence for the periodic
         // diagnostic emits below — the cap loop's iteration rate
         // depends on DMA progress, so iteration counts aren't a
@@ -235,22 +235,22 @@ async fn main(_spawner: Spawner) {
             // Wait until DMA has at least one paired sample (or a
             // 10 ms housekeeping timeout). `read_available` wakes on
             // the DMA half-/full-transfer IRQ and drains whatever's
-            // there — no fixed batch wait. While we wait, the
-            // executor parks us and runs LED/RX.
+            // there into packed u32 samples — no fixed batch wait.
+            // While we wait, the executor parks us and runs LED/RX.
             //
-            // On timeout, still do a sync `drain()` — samples may
+            // On timeout, still do a sync `fast_drain` — samples may
             // have landed in the rings but not yet crossed the
             // N/2 wake mark. The IRQ won't fire for them; only a
             // direct ring read can pick them up.
             let mut n = match embassy_futures::select::select(
-                capture.read_available(&mut pa_buf, &mut pb_buf),
+                capture.read_available(&mut samples),
                 embassy_time::Timer::after_millis(10),
             )
             .await
             {
                 embassy_futures::select::Either::First(n) => n,
                 embassy_futures::select::Either::Second(_) => {
-                    capture.drain(&mut pa_buf, &mut pb_buf)
+                    capture.fast_drain(&mut samples)
                 }
             };
 
@@ -280,27 +280,17 @@ async fn main(_spawner: Spawner) {
                 // sitting behind it — keep draining synchronously
                 // until we get a partial chunk (rings ~empty). Avoids
                 // going through the executor + IRQ wakeup path per
-                // 128 samples when we're racing to catch up on a
-                // burst.
-                // PA in the low 16, PB in the high 16. Masking the
-                // packed u32 once is cheaper than masking pa/pb
-                // separately and lets us fuse the read-pack-mask-feed
-                // chain into a single pass over the stack buffers.
-                const SAMPLE_MASK: u32 = PA_MASK as u32 | ((PB_MASK as u32) << 16);
+                // DRAIN_CHUNK samples when we're racing to catch up
+                // on a burst.
                 loop {
-                    for i in 0..n {
-                        // pa = GPIOA->IDR low 16, pb = GPIOB->IDR low 16.
-                        // Packing into one u32 matches the on-wire LE byte
-                        // layout exactly; the host's permute layer
-                        // unpacks them per-board.
-                        let sample = (pa_buf[i] as u32 | (pb_buf[i] as u32) << 16) & SAMPLE_MASK;
+                    for &sample in &samples[..n] {
                         encoder.feed(sample, &mut sink);
                     }
 
                     if n < DRAIN_CHUNK {
                         break;
                     }
-                    n = capture.drain(&mut pa_buf, &mut pb_buf);
+                    n = capture.fast_drain(&mut samples);
                     if n == 0 {
                         break;
                     }

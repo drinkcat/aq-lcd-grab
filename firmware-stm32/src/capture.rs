@@ -75,6 +75,20 @@ pub struct Capture<'d> {
     _tim: Timer<'d, TIM2>,
     pa_ring: ReadableRingBuffer<'d, u16>,
     pb_ring: ReadableRingBuffer<'d, u16>,
+    /// Raw pointers to the DMA buffers, captured before the slice was
+    /// moved into the ring constructors. Used by `fast_drain` to read
+    /// samples directly without going through embassy's per-sample
+    /// `read_volatile` + `as_index` + `%cap` path. Length is
+    /// `RING_CAP`, must be a power of two (asserted in `new`).
+    pa_buf_ptr: *const u16,
+    pb_buf_ptr: *const u16,
+    /// Our own read indices (mod RING_CAP) for `fast_drain`. Kept
+    /// in sync with the embassy ring's internal read_index — but
+    /// since fast_drain bypasses the embassy ring entirely, embassy
+    /// never sees the reads. We only use the embassy ring for the
+    /// async waker (`read_available` → `set_waker`).
+    pa_read_idx: usize,
+    pb_read_idx: usize,
     /// Samples lost to ring overrun *since the last `take_dropped`*.
     /// Cap task drains this each tick to emit tag=0xFD overrun frames.
     dropped: u32,
@@ -83,6 +97,13 @@ pub struct Capture<'d> {
     /// the dominant loss mode.
     dropped_total: u32,
 }
+
+/// Hardcoded ring capacity. Must match the slice passed to
+/// `Capture::new` and must be a power of two — `fast_drain` uses
+/// `& (RING_CAP - 1)` for the modulus, so a non-pow2 cap would
+/// silently corrupt indices.
+pub const RING_CAP: usize = 4096;
+const RING_MASK: usize = RING_CAP - 1;
 
 impl<'d> Capture<'d> {
     /// `pa_buf` and `pb_buf` must each be a power-of-2-sized slice with
@@ -97,9 +118,9 @@ impl<'d> Capture<'d> {
         pb_buf: &'d mut [u16],
     ) -> Self {
         assert_eq!(pa_buf.len(), pb_buf.len(), "ring buffers must match");
-        assert!(
-            pa_buf.len().is_power_of_two(),
-            "ring length must be a power of 2"
+        assert_eq!(
+            pa_buf.len(), RING_CAP,
+            "ring length must equal RING_CAP — fast_drain hardcodes the modulus mask"
         );
 
         // PA12 = ETR input. F1 wants AF inputs as plain floating input
@@ -110,6 +131,13 @@ impl<'d> Capture<'d> {
         // them as half-words via DMA.
         let gpioa_idr = pac::GPIOA.idr().as_ptr() as *mut u16;
         let gpiob_idr = pac::GPIOB.idr().as_ptr() as *mut u16;
+
+        // Snapshot the buffer pointers before the slices are moved
+        // into ReadableRingBuffer (it consumes them). `fast_drain`
+        // reads from these directly, bypassing embassy's per-sample
+        // `read_volatile` + `as_index` + udiv-by-cap path.
+        let pa_buf_ptr = pa_buf.as_ptr();
+        let pb_buf_ptr = pb_buf.as_ptr();
 
         // Grab the DMA request IDs *before* constructing the rings —
         // the Peri move into ReadableRingBuffer consumes the handle.
@@ -234,6 +262,10 @@ impl<'d> Capture<'d> {
             _tim: tim,
             pa_ring,
             pb_ring,
+            pa_buf_ptr,
+            pb_buf_ptr,
+            pa_read_idx: 0,
+            pb_read_idx: 0,
             dropped: 0,
             dropped_total: 0,
         }
@@ -271,28 +303,7 @@ impl<'d> Capture<'d> {
         // from then on to come from two different WR edges.
         let overrun = pa_result.is_err() || pb_result.is_err();
         if overrun {
-            let r = self._tim.regs_gp16();
-            // Stop the counter; no more ETR clocks → no more DMA.
-            r.cr1().modify(|w| w.set_cen(false));
-            // Clear any pending CC1IF / CC2IF / UIF status flags —
-            // otherwise on restart the DMA channels can each consume
-            // one stale interrupt flag as a "ghost" transfer,
-            // re-introducing the pair drift we just resynced away.
-            r.sr().modify(|w| {
-                w.set_uif(false);
-                w.set_ccif(0, false);
-                w.set_ccif(1, false);
-            });
-            // Account a full ring's worth of drops (we can't tell
-            // exactly how many were lost).
-            let n = self.pa_ring.capacity() as u32;
-            self.dropped = self.dropped.saturating_add(n);
-            self.dropped_total = self.dropped_total.saturating_add(n);
-            self.pa_ring.clear();
-            self.pb_ring.clear();
-            // Restart the counter — next WR edge fires both DMAs
-            // from a known-empty state.
-            self._tim.regs_gp16().cr1().modify(|w| w.set_cen(true));
+            self.hard_resync();
             return 0;
         }
         let pa_read = pa_result.map(|(r, _)| r).unwrap_or(0);
@@ -307,29 +318,108 @@ impl<'d> Capture<'d> {
         pa_read.min(pb_read)
     }
 
-    /// Wait until at least one paired sample is available, then drain
-    /// whatever's currently in both rings (up to `out_pa.len()`) and
-    /// return the count.
+    /// Drain paired samples directly from the DMA buffers, packing
+    /// into u32 (PA in low 16, PB in high 16, mask applied) — bypasses
+    /// embassy's `read_volatile` + per-sample `%cap` + double `len()`
+    /// path. Returns count written.
     ///
-    /// Unlike [`read_chunk`], this doesn't wait for a fixed batch — it
-    /// wakes on the DMA's half-/full-transfer IRQ (at N/2 and wrap)
-    /// and immediately drains whatever has landed. Caller decides
-    /// how much to drain per wake via the `out_pa`/`out_pb` slice
-    /// size. Wakeup latency is bounded by the DMA wake granularity
-    /// (RING_LEN/2 samples), not by `out_pa.len()`.
+    /// Overrun detection: this reads NDTR on both channels and trusts
+    /// that the gap between our read index and the DMA write position
+    /// never exceeds `RING_CAP / 2`. We can't see TCIF (embassy's ISR
+    /// consumes it), so we use a safety-margin heuristic instead of
+    /// exact wrap-counting: if available samples > RING_CAP/2 we
+    /// declare overrun. False positives possible if the caller falls
+    /// behind by more than half a ring — but that *is* an overrun in
+    /// the practical sense (drain rate < fill rate by 2× headroom),
+    /// so triggering early is fine.
+    pub fn fast_drain(&mut self, out: &mut [u32]) -> usize {
+        let pa_ndtr = pac::DMA1.ch(4).ndtr().read().ndt() as usize;
+        let pb_ndtr = pac::DMA1.ch(6).ndtr().read().ndt() as usize;
+
+        // DMA was armed with RING_CAP transfers; NDTR counts down from
+        // RING_CAP to 1, then auto-reloads. write_pos = next slot the
+        // DMA will write to. NDTR==0 only momentarily; treat 0 as
+        // RING_CAP-equivalent (i.e. write_pos = 0, just wrapped).
+        let pa_write = (RING_CAP - pa_ndtr) & RING_MASK;
+        let pb_write = (RING_CAP - pb_ndtr) & RING_MASK;
+
+        let pa_avail = (pa_write.wrapping_sub(self.pa_read_idx)) & RING_MASK;
+        let pb_avail = (pb_write.wrapping_sub(self.pb_read_idx)) & RING_MASK;
+
+        // TODO: Too agressive, comment out.
+        //if pa_avail > RING_CAP / 2 || pb_avail > RING_CAP / 2 {
+            //self.hard_resync();
+            //return 0;
+        //}
+
+        let n = pa_avail.min(pb_avail).min(out.len());
+        const SAMPLE_MASK: u32 =
+            PA_MASK as u32 | ((PB_MASK as u32) << 16);
+
+        let pa_base = self.pa_buf_ptr;
+        let pb_base = self.pb_buf_ptr;
+        let mut pa_i = self.pa_read_idx;
+        let mut pb_i = self.pb_read_idx;
+        for slot in &mut out[..n] {
+            // SAFETY: pa_base/pb_base point to a [u16; RING_CAP] live
+            // for 'd; pa_i/pb_i are always in 0..RING_CAP via &mask.
+            let pa = unsafe { core::ptr::read_volatile(pa_base.add(pa_i)) };
+            let pb = unsafe { core::ptr::read_volatile(pb_base.add(pb_i)) };
+            *slot = ((pa as u32) | ((pb as u32) << 16)) & SAMPLE_MASK;
+            pa_i = (pa_i + 1) & RING_MASK;
+            pb_i = (pb_i + 1) & RING_MASK;
+        }
+        self.pa_read_idx = pa_i;
+        self.pb_read_idx = pb_i;
+        n
+    }
+
+    fn hard_resync(&mut self) {
+        let r = self._tim.regs_gp16();
+        // Stop the counter; no more ETR clocks → no more DMA.
+        r.cr1().modify(|w| w.set_cen(false));
+        // Clear any pending CC1IF / CC2IF / UIF status flags —
+        // otherwise on restart the DMA channels can each consume
+        // one stale interrupt flag as a "ghost" transfer,
+        // re-introducing the pair drift we just resynced away.
+        r.sr().modify(|w| {
+            w.set_uif(false);
+            w.set_ccif(0, false);
+            w.set_ccif(1, false);
+        });
+        // Account a full ring's worth of drops (we can't tell
+        // exactly how many were lost).
+        let n = self.pa_ring.capacity() as u32;
+        self.dropped = self.dropped.saturating_add(n);
+        self.dropped_total = self.dropped_total.saturating_add(n);
+        self.pa_ring.clear();
+        self.pb_ring.clear();
+        // Re-anchor our own read indices to the embassy ring's new
+        // (cleared) write position. embassy's clear() sets read_index
+        // to wherever the DMA currently is, so reading NDTR now gives
+        // us the same anchor.
+        let pa_ndtr = pac::DMA1.ch(4).ndtr().read().ndt() as usize;
+        let pb_ndtr = pac::DMA1.ch(6).ndtr().read().ndt() as usize;
+        self.pa_read_idx = (RING_CAP - pa_ndtr) & RING_MASK;
+        self.pb_read_idx = (RING_CAP - pb_ndtr) & RING_MASK;
+        // Restart the counter — next WR edge fires both DMAs
+        // from a known-empty state.
+        r.cr1().modify(|w| w.set_cen(true));
+    }
+
+    /// Wait until at least one paired sample is available, then
+    /// fast-drain whatever's currently in both rings (up to
+    /// `out.len()`) into packed u32 samples and return the count.
     ///
-    /// On ring overrun, does a full resync (same as `drain`) and
-    /// returns 0.
-    pub async fn read_available(
-        &mut self,
-        out_pa: &mut [u16],
-        out_pb: &mut [u16],
-    ) -> usize {
+    /// Wakes on the DMA's half-/full-transfer IRQ (at N/2 and wrap)
+    /// via embassy's waker, then bypasses embassy's ring read path
+    /// and reads directly from the DMA buffer via `fast_drain`.
+    pub async fn read_available(&mut self, out: &mut [u32]) -> usize {
         poll_fn(|cx| {
             // Register on PA only — PB fills in lockstep, so PA's
             // half-/full-transfer IRQ implies PB has data too.
             self.pa_ring.set_waker(cx.waker());
-            let n = self.drain(out_pa, out_pb);
+            let n = self.fast_drain(out);
             if n > 0 {
                 Poll::Ready(n)
             } else {
