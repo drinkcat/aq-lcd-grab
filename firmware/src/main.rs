@@ -109,6 +109,12 @@ struct PipeSink {
     /// `tag=0xFD` overrun frame at the next opportunity so the host
     /// knows a gap exists. Cleared on every successful drain.
     pending_dropped_samples: u32,
+    /// Cumulative bytes successfully enqueued to TX_PIPE since boot,
+    /// *excluding* tag=0x03 TICK frames so the counter reflects the
+    /// real BLOCK/RUN/LOG/OVERRUN/ACK payload — the thing whose ratio
+    /// to sample count matters for compression analysis. Wraps every
+    /// ~4 GB; the capture task diffs against a per-tick baseline.
+    bytes_out: u32,
 }
 
 impl PipeSink {
@@ -119,6 +125,7 @@ impl PipeSink {
             overflowed: false,
             dropped: 0,
             pending_dropped_samples: 0,
+            bytes_out: 0,
         }
     }
 
@@ -184,6 +191,12 @@ impl Sink for PipeSink {
                 Ok(n) => off += n,
                 Err(_) => unreachable!("free_capacity was pre-checked"),
             }
+        }
+        // Tally everything except TICK frames — TICK reports its own
+        // counter, so including TICK bytes would make the counter
+        // self-amplifying noise the host has to subtract back out.
+        if self.buf.first().copied() != Some(wire::TAG_TICK) {
+            self.bytes_out = self.bytes_out.wrapping_add(frame_size as u32);
         }
     }
 }
@@ -370,6 +383,15 @@ async fn main(_spawner: Spawner) {
     let cap_fut = async {
         let mut chunk = [0u32; DRAIN_CHUNK];
         let mut idle_ticks: u32 = 0;
+        // TICK rate-limit: target ~100 TICKs/sec regardless of drain
+        // cadence. Without this, sustained bursts produce one TICK per
+        // drain (~500/s of useless telemetry) and a long inner-drain
+        // pass produces a single TICK looking deceptively like a gap.
+        const TICK_INTERVAL_US: u64 = 10_000;
+        let mut last_tick = Instant::now();
+        let mut tick_drained: u64 = 0;
+        let mut tick_t0 = last_tick;
+        let mut tick_bytes_baseline: u32 = 0;
         loop {
             // Drain all pending host commands. Every START/STOP gets an
             // ack even when it's a no-op for the current state — the
@@ -409,7 +431,6 @@ async fn main(_spawner: Spawner) {
             // Drain the PIO ring even when STOPPED — keeps it empty so
             // we don't trigger an overrun the moment we transition into
             // STREAMING.
-            let t0 = Instant::now();
             let mut total = 0usize;
             loop {
                 let n = capture.drain(&mut chunk);
@@ -435,21 +456,55 @@ async fn main(_spawner: Spawner) {
             }
 
             if total > 0 && state == StreamState::Streaming {
-                // Flush per drain tick so latency is bounded by the
-                // drain period, not by waiting for a 255-sample fill.
-                encoder.flush(&mut sink);
+                // Per-drain: flush only the in-progress BLOCK (unique
+                // bursts gain nothing from waiting), but leave any
+                // in-progress RUN alive so a uniform fill spanning
+                // many drains merges into one big RUN frame instead
+                // of N small ones (the previous full-flush behaviour
+                // shipped one ~30-sample RUN per drain even when the
+                // run was the same sample for hundreds of edges).
+                encoder.flush_block_only(&mut sink);
             }
 
-            // Tick frame: per-drain telemetry (wall clock + backlog).
-            // Emit only when STREAMING and only when this pass actually
-            // consumed samples — keeps the idle channel quiet.
-            if state == StreamState::Streaming && total > 0 {
-                let t1 = Instant::now();
-                let t_us = t0.as_micros() as u32;
-                let dt_us = t1.duration_since(t0).as_micros().min(u16::MAX as u64) as u16;
-                let n_drained = total.min(u16::MAX as usize) as u16;
-                let n_pending = capture.available().min(u16::MAX as u32) as u16;
-                wire::encode_tick(t_us, dt_us, n_drained, n_pending, &mut sink);
+            // Tick aggregation: sum drains across the window so a
+            // single 50 ms TICK covers however many drain iterations
+            // happened in between. Reset on emit.
+            if state == StreamState::Streaming {
+                tick_drained = tick_drained.saturating_add(total as u64);
+                let now = Instant::now();
+                if now.duration_since(last_tick).as_micros() >= TICK_INTERVAL_US {
+                    let n_pending = capture.available().min(u16::MAX as u32) as u16;
+                    let n_drained = tick_drained.min(u16::MAX as u64) as u16;
+                    let bytes_now = sink.bytes_out;
+                    let bytes_delta = bytes_now.wrapping_sub(tick_bytes_baseline);
+                    // Skip pure-idle windows: nothing arrived, nothing
+                    // queued, nothing shipped. Keeps the wire silent
+                    // when the bus is genuinely quiet; the next
+                    // non-zero TICK covers the full idle gap via
+                    // dt_us, so no signal is lost.
+                    if n_drained > 0 || n_pending > 0 || bytes_delta > 0 {
+                        let t_us = tick_t0.as_micros() as u32;
+                        let dt_us = now
+                            .duration_since(tick_t0)
+                            .as_micros()
+                            .min(u16::MAX as u64) as u16;
+                        wire::encode_tick(t_us, dt_us, n_drained, n_pending, bytes_delta, &mut sink);
+                    }
+                    last_tick = now;
+                    tick_t0 = now;
+                    tick_drained = 0;
+                    // Re-baseline *after* encode_tick so its own bytes
+                    // (which PipeSink excludes anyway) don't matter.
+                    tick_bytes_baseline = sink.bytes_out;
+                }
+            } else {
+                // Keep the window anchored to the current time while
+                // STOPPED so the first post-START TICK reports a
+                // ~10 ms window, not the entire STOPPED interval.
+                tick_t0 = Instant::now();
+                last_tick = tick_t0;
+                tick_drained = 0;
+                tick_bytes_baseline = sink.bytes_out;
             }
 
             // Overrun reporting. Combine PIO-ring drops (capture
@@ -474,6 +529,14 @@ async fn main(_spawner: Spawner) {
             embassy_futures::yield_now().await;
 
             if total == 0 {
+                if idle_ticks == 0 && state == StreamState::Streaming {
+                    // First idle tick after activity: flush any
+                    // RUN held across drain boundaries so the host
+                    // sees the trailing run within ~2 ms of quiet,
+                    // not after the next sample change (which may
+                    // never come).
+                    encoder.flush(&mut sink);
+                }
                 idle_ticks = idle_ticks.wrapping_add(1);
                 if idle_ticks.is_multiple_of(2500) && state == StreamState::Streaming {
                     // ~5 s heartbeat while streaming idle.

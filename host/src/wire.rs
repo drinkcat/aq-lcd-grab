@@ -17,6 +17,7 @@ use std::io;
 pub const TAG_BLOCK: u8 = 0x01;
 pub const TAG_RUN: u8 = 0x02;
 pub const TAG_TICK: u8 = 0x03;
+pub const TAG_REPEAT2: u8 = 0x04;
 pub const TAG_OVERRUN: u8 = 0xFD;
 pub const TAG_LOG: u8 = 0xFE;
 pub const TAG_STARTED: u8 = 0xFB;
@@ -37,6 +38,15 @@ pub enum Event {
     Block(Vec<u32>),
     /// A tag=0x02 run: `n` repetitions of `sample`.
     Run { n: u16, sample: u32 },
+    /// A tag=0x04 REPEAT2: a sequence of runs alternating between
+    /// `val_a` and `val_b`. `run_lens[i]` is the length of run `i`;
+    /// run 0 is `val_a`, run 1 is `val_b`, run 2 is `val_a`, etc.
+    /// All lengths are guaranteed ≥ 2.
+    Repeat2 {
+        val_a: u32,
+        val_b: u32,
+        run_lens: Vec<u8>,
+    },
     /// A tag=0x03 drain tick: firmware wall-clock + backlog telemetry.
     Tick {
         /// Firmware `Instant::now()` at the start of the drain pass
@@ -48,6 +58,12 @@ pub enum Event {
         n_drained: u16,
         /// Samples still pending in the PIO/DMA ring after drain.
         n_pending: u16,
+        /// Bytes the firmware enqueued to the USB CDC stream during
+        /// this TICK window, *excluding* TICK frames themselves.
+        /// Per-window delta (not cumulative). Compare against
+        /// `n_drained * 4` for the encoder's effective compression
+        /// ratio over the window.
+        bytes_out: u32,
     },
     /// A tag=0xFD overrun marker: firmware lost `dropped` WR edges.
     Overrun { dropped: u32 },
@@ -128,14 +144,32 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             Ok(Some((Event::Run { n, sample }, 7)))
         }
         TAG_TICK => {
-            if buf.len() < 11 {
+            if buf.len() < 15 {
                 return Ok(None);
             }
             let t_us = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
             let dt_us = u16::from_le_bytes([buf[5], buf[6]]);
             let n_drained = u16::from_le_bytes([buf[7], buf[8]]);
             let n_pending = u16::from_le_bytes([buf[9], buf[10]]);
-            Ok(Some((Event::Tick { t_us, dt_us, n_drained, n_pending }, 11)))
+            let bytes_out = u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]]);
+            Ok(Some((Event::Tick { t_us, dt_us, n_drained, n_pending, bytes_out }, 15)))
+        }
+        TAG_REPEAT2 => {
+            // Header: tag + val_a:u32 + val_b:u32 = 9 bytes.
+            if buf.len() < 9 {
+                return Ok(None);
+            }
+            let val_a = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+            let val_b = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]);
+            // Scan the rest for the null terminator. If not yet
+            // present, the frame's incomplete — wait for more bytes.
+            let body_start = 9;
+            let Some(zero_off) = buf[body_start..].iter().position(|&b| b == 0) else {
+                return Ok(None);
+            };
+            let run_lens = buf[body_start..body_start + zero_off].to_vec();
+            let consumed = body_start + zero_off + 1;
+            Ok(Some((Event::Repeat2 { val_a, val_b, run_lens }, consumed)))
         }
         TAG_OVERRUN => {
             if buf.len() < 5 {

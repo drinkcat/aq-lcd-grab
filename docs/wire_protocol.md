@@ -63,15 +63,16 @@ N consecutive WR edges produced identical `(pa, pb)`. N ≥ 2.
 A run longer than 65535 edges is split into multiple tag=0x02
 frames back-to-back.
 
-### tag = 0x03 — drain tick (10-byte body)
+### tag = 0x03 — drain tick (14-byte body)
 
 Heartbeat emitted once per firmware drain iteration while
-STREAMING. Gives the host wall-clock + backlog telemetry without
-per-sample timestamping — enough to plot arrival rate, drain
-throughput, and ring fill level over time.
+STREAMING. Gives the host wall-clock + backlog + throughput
+telemetry without per-sample timestamping — enough to plot
+arrival rate, drain throughput, ring fill level, and
+compression ratio over time.
 
 ```
-[0x03] [t_us:u32 LE] [dt_us:u16 LE] [n_drained:u16 LE] [n_pending:u16 LE]
+[0x03] [t_us:u32 LE] [dt_us:u16 LE] [n_drained:u16 LE] [n_pending:u16 LE] [bytes_out:u32 LE]
 ```
 
 - `t_us` = firmware Instant (low 32 bits, µs). Wraps every ~71 min.
@@ -81,6 +82,48 @@ throughput, and ring fill level over time.
 - `n_pending` = `available()` immediately after drain — the backlog
   still sitting in the PIO/DMA ring. Approaches the ring size when
   the firmware can't keep up.
+- `bytes_out` = bytes the firmware enqueued onto the USB CDC
+  stream during this TICK window, **excluding** tag=0x03 TICK
+  frames themselves. **Per-window delta, not cumulative.**
+  Compare against `n_drained` × 4 for the effective compression
+  ratio of the encoder over the window.
+
+TICKs are emitted at ~100/sec (every 10 ms of wall clock) but
+*only* when the window had something to report — if
+`n_drained`, `n_pending`, and `bytes_out` are all 0 the TICK is
+suppressed, keeping the wire silent during idle stretches. The
+next non-zero TICK then covers the full silent gap via `dt_us`.
+
+### tag = 0x04 — alternating runs (variable body)
+
+A sequence of same-sample runs that strictly alternate between
+two distinct sample values. Optimised for B&W pixel rendering
+on the target device where the bus toggles between `0xFFFF` and
+`0x0000` every few-to-tens of WR edges — naïve RLE wastes
+~7 bytes of header per toggle; this frame collapses each toggle
+to 1 byte at the cost of one shared 9-byte header per sequence.
+
+```
+[0x04] [a_lo a_hi pa_lo pa_hi]  [b_lo b_hi pb_lo pb_hi]  [run_lens...] [0x00]
+       └── val_a u32 LE ─────┘  └── val_b u32 LE ─────┘  └── u8 each ─┘
+```
+
+- `val_a`, `val_b` = the two distinct sample values that
+  alternate. Run 0 is `val_a`, run 1 is `val_b`, run 2 is
+  `val_a`, etc.
+- `run_lens[i]` = u8 length of run *i*. Runs are always ≥ 2
+  (lone samples never participate in REPEAT2) and ≤ 255 in
+  this encoding; runs longer than 255 force a REPEAT2 flush
+  and re-enter normal RUN encoding.
+- `0x00` terminates the run-length list (0 is never a valid
+  run length, so it's unambiguous). The frame contains ≥ 3
+  runs in practice — below that the encoder emits individual
+  RUN frames instead.
+- Body size: 4 + 4 + n + 1 bytes for `n` runs.
+
+A third distinct sample value, or a run > 255, terminates
+the REPEAT2 frame; the encoder flushes what it has and
+resumes with normal RUN/BLOCK encoding.
 
 ### tag = 0xFD — overrun marker (4-byte body)
 
@@ -130,7 +173,7 @@ the host issues `STOP` very early — see below).
 
 ### Reserved tags
 
-`0x00`, `0x04`–`0xFA`, `0xFF` are reserved. Unknown tags are a fatal
+`0x00`, `0x05`–`0xFA`, `0xFF` are reserved. Unknown tags are a fatal
 parse error — the host should `STOP`, drain, and `START` over.
 
 ## Direction: host → STM32 (control path)
@@ -188,7 +231,8 @@ The firmware's state machine:
 enum Event<'a> {
     Block   { samples: &'a [u8] /* 4·n bytes, decode as (pa,pb) pairs */ },
     Run     { n: u16, pa: u16, pb: u16 },
-    Tick    { t_us: u32, dt_us: u16, n_drained: u16, n_pending: u16 },
+    Tick    { t_us: u32, dt_us: u16, n_drained: u16, n_pending: u16, bytes_out: u32 },
+    Repeat2 { val_a: u32, val_b: u32, run_lens: &'a [u8] /* terminator 0 not included */ },
     Overrun { dropped: u32 },
     Log     { msg: &'a str },
     Started,
@@ -212,12 +256,13 @@ fn decode_frame(buf: &[u8]) -> Option<(Event<'_>, usize)> {
             pa: u16::from_le_bytes([buf[3], buf[4]]),
             pb: u16::from_le_bytes([buf[5], buf[6]]),
         }, 7)),
-        0x03 if buf.len() >= 11 => Some((Event::Tick {
+        0x03 if buf.len() >= 15 => Some((Event::Tick {
             t_us:      u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
             dt_us:     u16::from_le_bytes([buf[5], buf[6]]),
             n_drained: u16::from_le_bytes([buf[7], buf[8]]),
             n_pending: u16::from_le_bytes([buf[9], buf[10]]),
-        }, 11)),
+            bytes_out: u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]]),
+        }, 15)),
         0xFD if buf.len() >= 5 => Some((Event::Overrun {
             dropped: u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
         }, 5)),

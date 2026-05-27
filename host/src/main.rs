@@ -346,10 +346,37 @@ fn dispatch_event(
                 handle_frame(g, glyphs, dump_dir, seen, tx);
             }
         }
-        Event::Tick { t_us, dt_us, n_drained, n_pending } => {
+        Event::Repeat2 { val_a, val_b, run_lens } => {
+            let (data_a, is_data_a) = board.permute(val_a);
+            let (data_b, is_data_b) = board.permute(val_b);
+            let total: usize = run_lens.iter().map(|&l| l as usize).sum();
             println!(
-                "TICK  t={:>10}us dt={:>5}us drained={:>5} pending={:>5}",
-                t_us, dt_us, n_drained, n_pending,
+                "RPT2  runs={:3} total={:5}  A={:08x}({}:{:04x})  B={:08x}({}:{:04x})  lens={:?}",
+                run_lens.len(),
+                total,
+                val_a,
+                if is_data_a { 'D' } else { 'C' },
+                data_a,
+                val_b,
+                if is_data_b { 'D' } else { 'C' },
+                data_b,
+                run_lens,
+            );
+            for (i, &len) in run_lens.iter().enumerate() {
+                let (data, is_data) = if i & 1 == 0 {
+                    (data_a, is_data_a)
+                } else {
+                    (data_b, is_data_b)
+                };
+                if let Some(tx) = bus.feed_run(len as usize, data, is_data) {
+                    handle_frame(g, glyphs, dump_dir, seen, tx);
+                }
+            }
+        }
+        Event::Tick { t_us, dt_us, n_drained, n_pending, bytes_out } => {
+            println!(
+                "TICK  t={:>10}us dt={:>5}us drained={:>5} pending={:>5} bytes_out={:>10}",
+                t_us, dt_us, n_drained, n_pending, bytes_out,
             );
         }
         Event::Overrun { dropped } => {
