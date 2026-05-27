@@ -6,7 +6,8 @@ mod wire;
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -59,6 +60,13 @@ struct Args {
     /// (window, content) pairs are deduplicated.
     #[arg(long)]
     dump_dir: Option<PathBuf>,
+
+    /// Path to dump the raw wire byte stream into. Captures everything
+    /// from after sync (post-START) onward, byte-for-byte as it came
+    /// off the serial port — feed it back via `--replay` to re-run
+    /// any analysis offline.
+    #[arg(long)]
+    raw_dump: Option<PathBuf>,
 }
 
 /// ILI9488 command names.
@@ -141,9 +149,10 @@ fn main() -> anyhow::Result<()> {
     let port = args.port.clone();
     let replay = args.replay.clone();
     let dump_dir = args.dump_dir.clone();
+    let raw_dump = args.raw_dump.clone();
     let board = args.board;
     thread::spawn(move || {
-        if let Err(e) = reader_loop(port, board, replay, dump_dir, reader_shared) {
+        if let Err(e) = reader_loop(port, board, replay, dump_dir, raw_dump, reader_shared) {
             eprintln!("reader thread exited: {e:#}");
         }
     });
@@ -170,6 +179,7 @@ fn reader_loop(
     board: Board,
     replay: Option<String>,
     dump_dir: Option<PathBuf>,
+    raw_dump: Option<PathBuf>,
     shared: Arc<Mutex<Shared>>,
 ) -> anyhow::Result<()> {
     let (mut reader, mut writer): (Box<dyn Read + Send>, Option<Box<dyn Write + Send>>) =
@@ -234,6 +244,18 @@ fn reader_loop(
         sync(reader.as_mut(), w.as_mut())?;
     }
 
+    // Raw-dump sink: opened after sync so the file starts at the
+    // post-START byte stream, replayable as-is via --replay.
+    let mut raw_sink: Option<BufWriter<File>> = match raw_dump {
+        Some(path) => {
+            let f = File::create(&path)
+                .with_context(|| format!("creating raw dump file {}", path.display()))?;
+            eprintln!("reader: raw dump → {}", path.display());
+            Some(BufWriter::new(f))
+        }
+        None => None,
+    };
+
     let mut wire = WireDecoder::new();
     let mut bus = BusDecoder::new();
     let mut glyphs = decoder::Decoder::new();
@@ -247,9 +269,21 @@ fn reader_loop(
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
             Err(e) => return Err(e.into()),
         };
+        if read > 0 {
+            if let Some(sink) = raw_sink.as_mut() {
+                sink.write_all(&buf[..read])
+                    .with_context(|| "writing to raw dump file")?;
+                // Flush on the idle path below so the file is at most
+                // one read-timeout window behind real time, even if
+                // the viewer is killed.
+            }
+        }
         let events = if read > 0 {
             wire.feed(&buf[..read])?
         } else {
+            if let Some(sink) = raw_sink.as_mut() {
+                sink.flush().ok();
+            }
             Vec::new()
         };
 
@@ -311,6 +345,12 @@ fn dispatch_event(
             if let Some(tx) = bus.feed_run(n as usize, data, is_data) {
                 handle_frame(g, glyphs, dump_dir, seen, tx);
             }
+        }
+        Event::Tick { t_us, dt_us, n_drained, n_pending } => {
+            println!(
+                "TICK  t={:>10}us dt={:>5}us drained={:>5} pending={:>5}",
+                t_us, dt_us, n_drained, n_pending,
+            );
         }
         Event::Overrun { dropped } => {
             let msg = format!("(firmware lost {dropped} WR edges)");

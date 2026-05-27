@@ -16,6 +16,7 @@ use std::io;
 
 pub const TAG_BLOCK: u8 = 0x01;
 pub const TAG_RUN: u8 = 0x02;
+pub const TAG_TICK: u8 = 0x03;
 pub const TAG_OVERRUN: u8 = 0xFD;
 pub const TAG_LOG: u8 = 0xFE;
 pub const TAG_STARTED: u8 = 0xFB;
@@ -36,6 +37,18 @@ pub enum Event {
     Block(Vec<u32>),
     /// A tag=0x02 run: `n` repetitions of `sample`.
     Run { n: u16, sample: u32 },
+    /// A tag=0x03 drain tick: firmware wall-clock + backlog telemetry.
+    Tick {
+        /// Firmware `Instant::now()` at the start of the drain pass
+        /// (low 32 bits, µs). Wraps every ~71 minutes.
+        t_us: u32,
+        /// Wall-clock duration of the drain pass (`t1 - t0`, µs).
+        dt_us: u16,
+        /// Samples consumed in this drain pass.
+        n_drained: u16,
+        /// Samples still pending in the PIO/DMA ring after drain.
+        n_pending: u16,
+    },
     /// A tag=0xFD overrun marker: firmware lost `dropped` WR edges.
     Overrun { dropped: u32 },
     /// A tag=0xFE log frame: a UTF-8 line from the firmware.
@@ -113,6 +126,16 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             let n = u16::from_le_bytes([buf[1], buf[2]]);
             let sample = u32::from_le_bytes([buf[3], buf[4], buf[5], buf[6]]);
             Ok(Some((Event::Run { n, sample }, 7)))
+        }
+        TAG_TICK => {
+            if buf.len() < 11 {
+                return Ok(None);
+            }
+            let t_us = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+            let dt_us = u16::from_le_bytes([buf[5], buf[6]]);
+            let n_drained = u16::from_le_bytes([buf[7], buf[8]]);
+            let n_pending = u16::from_le_bytes([buf[9], buf[10]]);
+            Ok(Some((Event::Tick { t_us, dt_us, n_drained, n_pending }, 11)))
         }
         TAG_OVERRUN => {
             if buf.len() < 5 {

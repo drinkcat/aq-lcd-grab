@@ -15,7 +15,7 @@ use embassy_rp::usb::{Driver, InterruptHandler as UsbInterruptHandler};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::pipe::Pipe;
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
 use embassy_usb::{Builder, Config};
 use panic_halt as _;
@@ -409,6 +409,7 @@ async fn main(_spawner: Spawner) {
             // Drain the PIO ring even when STOPPED — keeps it empty so
             // we don't trigger an overrun the moment we transition into
             // STREAMING.
+            let t0 = Instant::now();
             let mut total = 0usize;
             loop {
                 let n = capture.drain(&mut chunk);
@@ -437,6 +438,18 @@ async fn main(_spawner: Spawner) {
                 // Flush per drain tick so latency is bounded by the
                 // drain period, not by waiting for a 255-sample fill.
                 encoder.flush(&mut sink);
+            }
+
+            // Tick frame: per-drain telemetry (wall clock + backlog).
+            // Emit only when STREAMING and only when this pass actually
+            // consumed samples — keeps the idle channel quiet.
+            if state == StreamState::Streaming && total > 0 {
+                let t1 = Instant::now();
+                let t_us = t0.as_micros() as u32;
+                let dt_us = t1.duration_since(t0).as_micros().min(u16::MAX as u64) as u16;
+                let n_drained = total.min(u16::MAX as usize) as u16;
+                let n_pending = capture.available().min(u16::MAX as u32) as u16;
+                wire::encode_tick(t_us, dt_us, n_drained, n_pending, &mut sink);
             }
 
             // Overrun reporting. Combine PIO-ring drops (capture

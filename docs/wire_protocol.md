@@ -49,20 +49,38 @@ A run of identical samples in the middle of a block forces the
 block to flush (tag=0x01 ends, tag=0x02 starts). Within a block,
 all consecutive pairs differ.
 
-### tag = 0x02 — run-length event (5-byte body)
+### tag = 0x02 — run-length event (6-byte body)
 
 N consecutive WR edges produced identical `(pa, pb)`. N ≥ 2.
 
 ```
-[0x02] [n] [pa_lo] [pa_hi] [pb_lo] [pb_hi]
-           └── u16 LE ──┘  └── u16 LE ──┘
+[0x02] [n_lo] [n_hi] [pa_lo] [pa_hi] [pb_lo] [pb_hi]
+       └── u16 LE ──┘ └── u16 LE ──┘ └── u16 LE ──┘
 ```
 
-- `n` = number of WR edges represented (≥ 1, ≤ 255).
+- `n` = number of WR edges represented (≥ 2, ≤ 65535).
 
-A run longer than 255 edges is split into multiple tag=0x02 frames
-back-to-back. At 667 kHz this is ≥ 2.6k frames/sec ≈ 18 kB/s — well
-within UART budget.
+A run longer than 65535 edges is split into multiple tag=0x02
+frames back-to-back.
+
+### tag = 0x03 — drain tick (10-byte body)
+
+Heartbeat emitted once per firmware drain iteration while
+STREAMING. Gives the host wall-clock + backlog telemetry without
+per-sample timestamping — enough to plot arrival rate, drain
+throughput, and ring fill level over time.
+
+```
+[0x03] [t_us:u32 LE] [dt_us:u16 LE] [n_drained:u16 LE] [n_pending:u16 LE]
+```
+
+- `t_us` = firmware Instant (low 32 bits, µs). Wraps every ~71 min.
+- `dt_us` = wall-clock duration of the drain pass that produced
+  this tick (`t1 - t0`).
+- `n_drained` = samples consumed in this drain pass.
+- `n_pending` = `available()` immediately after drain — the backlog
+  still sitting in the PIO/DMA ring. Approaches the ring size when
+  the firmware can't keep up.
 
 ### tag = 0xFD — overrun marker (4-byte body)
 
@@ -112,7 +130,7 @@ the host issues `STOP` very early — see below).
 
 ### Reserved tags
 
-`0x00`, `0x03`–`0xFA`, `0xFF` are reserved. Unknown tags are a fatal
+`0x00`, `0x04`–`0xFA`, `0xFF` are reserved. Unknown tags are a fatal
 parse error — the host should `STOP`, drain, and `START` over.
 
 ## Direction: host → STM32 (control path)
@@ -169,7 +187,8 @@ The firmware's state machine:
 ```rust
 enum Event<'a> {
     Block   { samples: &'a [u8] /* 4·n bytes, decode as (pa,pb) pairs */ },
-    Run     { n: u8, pa: u16, pb: u16 },
+    Run     { n: u16, pa: u16, pb: u16 },
+    Tick    { t_us: u32, dt_us: u16, n_drained: u16, n_pending: u16 },
     Overrun { dropped: u32 },
     Log     { msg: &'a str },
     Started,
@@ -188,11 +207,17 @@ fn decode_frame(buf: &[u8]) -> Option<(Event<'_>, usize)> {
                 samples: &buf[2..needed],
             }, needed))
         }
-        0x02 if buf.len() >= 6 => Some((Event::Run {
-            n: buf[1],
-            pa: u16::from_le_bytes([buf[2], buf[3]]),
-            pb: u16::from_le_bytes([buf[4], buf[5]]),
-        }, 6)),
+        0x02 if buf.len() >= 7 => Some((Event::Run {
+            n:  u16::from_le_bytes([buf[1], buf[2]]),
+            pa: u16::from_le_bytes([buf[3], buf[4]]),
+            pb: u16::from_le_bytes([buf[5], buf[6]]),
+        }, 7)),
+        0x03 if buf.len() >= 11 => Some((Event::Tick {
+            t_us:      u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
+            dt_us:     u16::from_le_bytes([buf[5], buf[6]]),
+            n_drained: u16::from_le_bytes([buf[7], buf[8]]),
+            n_pending: u16::from_le_bytes([buf[9], buf[10]]),
+        }, 11)),
         0xFD if buf.len() >= 5 => Some((Event::Overrun {
             dropped: u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
         }, 5)),

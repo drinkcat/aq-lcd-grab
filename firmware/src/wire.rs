@@ -17,6 +17,7 @@
 
 pub const TAG_BLOCK: u8 = 0x01;
 pub const TAG_RUN: u8 = 0x02;
+pub const TAG_TICK: u8 = 0x03;
 pub const TAG_OVERRUN: u8 = 0xFD;
 pub const TAG_LOG: u8 = 0xFE;
 pub const TAG_STARTED: u8 = 0xFB;
@@ -195,6 +196,24 @@ impl Encoder {
         self.flush_run(sink);
         self.flush_block(sink);
     }
+}
+
+/// Encode a tag=0x03 drain-tick frame.
+pub fn encode_tick<S: Sink>(t_us: u32, dt_us: u16, n_drained: u16, n_pending: u16, sink: &mut S) {
+    sink.push(TAG_TICK);
+    for &b in &t_us.to_le_bytes() {
+        sink.push(b);
+    }
+    for &b in &dt_us.to_le_bytes() {
+        sink.push(b);
+    }
+    for &b in &n_drained.to_le_bytes() {
+        sink.push(b);
+    }
+    for &b in &n_pending.to_le_bytes() {
+        sink.push(b);
+    }
+    sink.commit_frame();
 }
 
 /// Encode a tag=0xFD overrun frame.
