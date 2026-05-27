@@ -27,8 +27,10 @@ pub const HOST_CMD_STOP: u8 = 0x02;
 pub const HOST_CMD_LOG_TEST: u8 = 0x03;
 pub const HOST_CMD_STATS: u8 = 0x04;
 
-/// Maximum samples per tag=0x01 block or tag=0x02 run.
-const MAX_RUN: u8 = 255;
+/// Maximum samples per tag=0x01 block (u8 count) or tag=0x02 run
+/// (u16 count — see wire_protocol.md). The Pico keeps the full 255-sample
+/// block; the STM32 build trims its block to save RAM.
+const MAX_RUN: u16 = u16::MAX;
 const MAX_BLOCK: usize = 255;
 
 /// Byte sink: where the encoder pushes wire bytes.
@@ -60,7 +62,7 @@ pub struct Encoder {
     /// Run-in-progress: the same packed sample repeated `run_len` times.
     /// `run_len` ∈ [0, MAX_RUN]; 0 means "no run pending".
     run_sample: u32,
-    run_len: u8,
+    run_len: u16,
     /// Block-of-unique-in-progress: up to MAX_BLOCK distinct samples
     /// that haven't been flushed yet. Stored as flat LE u32 (= the
     /// on-wire byte layout).
@@ -169,9 +171,11 @@ impl Encoder {
             self.push_to_block(s, sink);
             return;
         }
-        // run_len >= 2 → emit as tag=0x02.
+        // run_len >= 2 → emit as tag=0x02 (u16 count, LE).
         sink.push(TAG_RUN);
-        sink.push(self.run_len);
+        let n = self.run_len.to_le_bytes();
+        sink.push(n[0]);
+        sink.push(n[1]);
         for &b in &self.run_sample.to_le_bytes() {
             sink.push(b);
         }
