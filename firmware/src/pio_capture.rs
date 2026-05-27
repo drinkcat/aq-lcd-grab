@@ -121,8 +121,8 @@ impl<'d> RingCapture<'d> {
             common.make_pio_pin(pins.db13),
             common.make_pio_pin(pins.db14),
             common.make_pio_pin(pins.db15),
-            common.make_pio_pin(pins.dc),
             common.make_pio_pin(pins.cs),
+            common.make_pio_pin(pins.dc),
         ];
         let wr_pin = common.make_pio_pin(pins.wr);
         let p_refs: [&_; 18] = core::array::from_fn(|i| &p_in[i]);
