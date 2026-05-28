@@ -1,0 +1,10 @@
+[package]
+name = "aq-lcd-grab-wire"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Shared wire-protocol encoder/decoder for the display-bus capture boards and host."
+
+[lib]
+name = "wire"
+path = "src/lib.rs"
