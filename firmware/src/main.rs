@@ -110,7 +110,7 @@ struct PipeSink {
     /// knows a gap exists. Cleared on every successful drain.
     pending_dropped_samples: u32,
     /// Cumulative bytes successfully enqueued to TX_PIPE since boot,
-    /// *excluding* tag=0x03 TICK frames so the counter reflects the
+    /// *excluding* tag=0xFA TICK frames so the counter reflects the
     /// real BLOCK/RUN/LOG/OVERRUN/ACK payload — the thing whose ratio
     /// to sample count matters for compression analysis. Wraps every
     /// ~4 GB; the capture task diffs against a per-tick baseline.

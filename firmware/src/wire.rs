@@ -17,8 +17,8 @@
 
 pub const TAG_BLOCK: u8 = 0x01;
 pub const TAG_RUN: u8 = 0x02;
-pub const TAG_TICK: u8 = 0x03;
-pub const TAG_REPEAT2: u8 = 0x04;
+pub const TAG_REPEAT2: u8 = 0x03;
+pub const TAG_TICK: u8 = 0xFA;
 pub const TAG_OVERRUN: u8 = 0xFD;
 pub const TAG_LOG: u8 = 0xFE;
 pub const TAG_STARTED: u8 = 0xFB;
@@ -35,7 +35,7 @@ pub const HOST_CMD_STATS: u8 = 0x04;
 const MAX_RUN: u16 = u16::MAX;
 const MAX_BLOCK: usize = 255;
 
-/// Maximum run length representable in a tag=0x04 REPEAT2 byte. Runs
+/// Maximum run length representable in a tag=0x03 REPEAT2 byte. Runs
 /// longer than this force the active REPEAT2 frame closed and revert
 /// to plain tag=0x02 RUN encoding for the overlong run.
 const REPEAT2_MAX_LEN: u16 = 255;
@@ -404,7 +404,7 @@ impl Encoder {
     }
 }
 
-/// Encode a tag=0x03 drain-tick frame.
+/// Encode a tag=0xFA drain-tick frame.
 pub fn encode_tick<S: Sink>(
     t_us: u32,
     dt_us: u16,

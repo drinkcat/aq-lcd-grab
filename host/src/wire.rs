@@ -16,8 +16,8 @@ use std::io;
 
 pub const TAG_BLOCK: u8 = 0x01;
 pub const TAG_RUN: u8 = 0x02;
-pub const TAG_TICK: u8 = 0x03;
-pub const TAG_REPEAT2: u8 = 0x04;
+pub const TAG_REPEAT2: u8 = 0x03;
+pub const TAG_TICK: u8 = 0xFA;
 pub const TAG_OVERRUN: u8 = 0xFD;
 pub const TAG_LOG: u8 = 0xFE;
 pub const TAG_STARTED: u8 = 0xFB;
@@ -38,7 +38,7 @@ pub enum Event {
     Block(Vec<u32>),
     /// A tag=0x02 run: `n` repetitions of `sample`.
     Run { n: u16, sample: u32 },
-    /// A tag=0x04 REPEAT2: a sequence of runs alternating between
+    /// A tag=0x03 REPEAT2: a sequence of runs alternating between
     /// `val_a` and `val_b`. `run_lens[i]` is the length of run `i`;
     /// run 0 is `val_a`, run 1 is `val_b`, run 2 is `val_a`, etc.
     /// All lengths are guaranteed ≥ 2.
@@ -47,7 +47,7 @@ pub enum Event {
         val_b: u32,
         run_lens: Vec<u8>,
     },
-    /// A tag=0x03 drain tick: firmware wall-clock + backlog telemetry.
+    /// A tag=0xFA drain tick: firmware wall-clock + backlog telemetry.
     Tick {
         /// Firmware `Instant::now()` at the start of the drain pass
         /// (low 32 bits, µs). Wraps every ~71 minutes.

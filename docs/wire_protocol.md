@@ -71,38 +71,7 @@ N consecutive WR edges produced identical `(pa, pb)`. N ≥ 2.
 A run longer than 65535 edges is split into multiple tag=0x02
 frames back-to-back.
 
-### tag = 0x03 — drain tick (14-byte body)
-
-Heartbeat emitted once per firmware drain iteration while
-STREAMING. Gives the host wall-clock + backlog + throughput
-telemetry without per-sample timestamping — enough to plot
-arrival rate, drain throughput, ring fill level, and
-compression ratio over time.
-
-```
-[0x03] [t_us:u32 LE] [dt_us:u16 LE] [n_drained:u16 LE] [n_pending:u16 LE] [bytes_out:u32 LE]
-```
-
-- `t_us` = firmware Instant (low 32 bits, µs). Wraps every ~71 min.
-- `dt_us` = wall-clock duration of the drain pass that produced
-  this tick (`t1 - t0`).
-- `n_drained` = samples consumed in this drain pass.
-- `n_pending` = `available()` immediately after drain — the backlog
-  still sitting in the PIO/DMA ring. Approaches the ring size when
-  the firmware can't keep up.
-- `bytes_out` = bytes the firmware enqueued onto the USB CDC
-  stream during this TICK window, **excluding** tag=0x03 TICK
-  frames themselves. **Per-window delta, not cumulative.**
-  Compare against `n_drained` × 4 for the effective compression
-  ratio of the encoder over the window.
-
-TICKs are emitted at ~100/sec (every 10 ms of wall clock) but
-*only* when the window had something to report — if
-`n_drained`, `n_pending`, and `bytes_out` are all 0 the TICK is
-suppressed, keeping the wire silent during idle stretches. The
-next non-zero TICK then covers the full silent gap via `dt_us`.
-
-### tag = 0x04 — alternating runs (variable body)
+### tag = 0x03 — alternating runs (variable body)
 
 A sequence of same-sample runs that strictly alternate between
 two distinct sample values. Optimised for B&W pixel rendering
@@ -112,7 +81,7 @@ on the target device where the bus toggles between `0xFFFF` and
 to 1 byte at the cost of one shared 9-byte header per sequence.
 
 ```
-[0x04] [a_lo a_hi pa_lo pa_hi]  [b_lo b_hi pb_lo pb_hi]  [run_lens...] [0x00]
+[0x03] [a_lo a_hi pa_lo pa_hi]  [b_lo b_hi pb_lo pb_hi]  [run_lens...] [0x00]
        └── val_a u32 LE ─────┘  └── val_b u32 LE ─────┘  └── u8 each ─┘
 ```
 
@@ -179,9 +148,40 @@ the host issues `STOP` very early — see below).
 [0xFC]
 ```
 
+### tag = 0xFA — drain tick (14-byte body)
+
+Out-of-band heartbeat emitted ~100×/sec while STREAMING. Gives
+the host wall-clock + backlog + throughput telemetry without
+per-sample timestamping — enough to plot arrival rate, drain
+throughput, ring fill level, and compression ratio over time.
+Lives in the `0xFX` out-of-band range alongside OVERRUN / LOG /
+the acks, not the low data-tag range.
+
+```
+[0xFA] [t_us:u32 LE] [dt_us:u16 LE] [n_drained:u16 LE] [n_pending:u16 LE] [bytes_out:u32 LE]
+```
+
+- `t_us` = firmware Instant (low 32 bits, µs). Wraps every ~71 min.
+- `dt_us` = wall-clock duration of the TICK window (`t1 - t0`).
+- `n_drained` = samples consumed across the window.
+- `n_pending` = `available()` at emit time — the backlog still
+  sitting in the PIO/DMA ring. Approaches the ring size when the
+  firmware can't keep up.
+- `bytes_out` = bytes the firmware enqueued onto the stream
+  during this TICK window, **excluding** TICK frames themselves.
+  **Per-window delta, not cumulative.** Compare against
+  `n_drained` × 4 for the effective compression ratio over the
+  window.
+
+TICKs are emitted every ~10 ms but *only* when the window had
+something to report — if `n_drained`, `n_pending`, and
+`bytes_out` are all 0 the TICK is suppressed, keeping the wire
+silent during idle stretches. The next non-zero TICK then covers
+the full silent gap via `dt_us`.
+
 ### Reserved tags
 
-`0x00`, `0x05`–`0xFA`, `0xFF` are reserved. Unknown tags are a fatal
+`0x00`, `0x04`–`0xF9`, `0xFF` are reserved. Unknown tags are a fatal
 parse error — the host should `STOP`, drain, and `START` over.
 
 ## Direction: host → STM32 (control path)
@@ -233,72 +233,13 @@ The firmware's state machine:
 - **STOP** finishes any in-flight frame body, sends `[0xFC]`, drops
   RLE state, transitions back to **STOPPED**.
 
-## Host-side decode (sketch)
+## Host-side decode
 
-```rust
-enum Event<'a> {
-    Block   { samples: &'a [u8] /* 4·n bytes (sentinel excluded), (pa,pb) pairs */ },
-    Run     { n: u16, pa: u16, pb: u16 },
-    Tick    { t_us: u32, dt_us: u16, n_drained: u16, n_pending: u16, bytes_out: u32 },
-    Repeat2 { val_a: u32, val_b: u32, run_lens: &'a [u8] /* terminator 0 not included */ },
-    Overrun { dropped: u32 },
-    Log     { msg: &'a str },
-    Started,
-    Stopped,
-}
-
-const SENTINEL: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-
-fn decode_frame(buf: &[u8]) -> Option<(Event<'_>, usize)> {
-    if buf.is_empty() {
-        return None;
-    }
-    match buf[0] {
-        0x01 => {
-            // Scan 4-byte samples until the 0xffff_ffff sentinel.
-            let mut off = 1;
-            loop {
-                if buf.len() < off + 4 {
-                    return None; // need more bytes
-                }
-                if buf[off..off + 4] == SENTINEL {
-                    return Some((Event::Block { samples: &buf[1..off] }, off + 4));
-                }
-                off += 4;
-            }
-        }
-        0x02 if buf.len() >= 7 => Some((Event::Run {
-            n:  u16::from_le_bytes([buf[1], buf[2]]),
-            pa: u16::from_le_bytes([buf[3], buf[4]]),
-            pb: u16::from_le_bytes([buf[5], buf[6]]),
-        }, 7)),
-        0x03 if buf.len() >= 15 => Some((Event::Tick {
-            t_us:      u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
-            dt_us:     u16::from_le_bytes([buf[5], buf[6]]),
-            n_drained: u16::from_le_bytes([buf[7], buf[8]]),
-            n_pending: u16::from_le_bytes([buf[9], buf[10]]),
-            bytes_out: u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]]),
-        }, 15)),
-        0xFD if buf.len() >= 5 => Some((Event::Overrun {
-            dropped: u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
-        }, 5)),
-        0xFE if buf.len() >= 3 => {
-            let len = u16::from_le_bytes([buf[1], buf[2]]) as usize;
-            (buf.len() >= 3 + len).then(|| (Event::Log {
-                msg: core::str::from_utf8(&buf[3..3 + len]).unwrap_or(""),
-            }, 3 + len))
-        }
-        0xFB => Some((Event::Started, 1)),
-        0xFC => Some((Event::Stopped, 1)),
-        _ => None, // bad tag — caller should STOP/drain/START to recover
-    }
-}
-```
-
-After decoding, the host applies the permutation table to turn
-`(pa, pb)` into `(data: u16, dc: bool, cs: bool)`, then feeds the
-result into the existing protocol decoder (which expects
-ILI9488-style command bytes + RGB565 pixel data).
+The authoritative decoder is `host/src/wire.rs` (`Decoder` /
+`parse_one`). After decoding, the host applies the permutation
+table to turn `(pa, pb)` into `(data: u16, dc: bool, cs: bool)`,
+then feeds the result into the existing protocol decoder (which
+expects ILI9488-style command bytes + RGB565 pixel data).
 
 ## Bandwidth budget
 
