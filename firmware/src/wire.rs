@@ -224,11 +224,16 @@ impl Encoder {
         // REPEAT2 body and corrupt the wire.
         self.repeat2_close(sink);
         sink.push(TAG_BLOCK);
-        sink.push(self.block_n as u8);
         let bytes = self.block_n * 4;
         for &b in &self.block[..bytes] {
             sink.push(b);
         }
+        // Sentinel 0xffff_ffff terminates the sample list — never a
+        // legal sample (captures are masked to 18 bits).
+        sink.push(0xff);
+        sink.push(0xff);
+        sink.push(0xff);
+        sink.push(0xff);
         sink.commit_frame();
         self.block_n = 0;
     }

@@ -38,12 +38,20 @@ across many bytes when the bus is full of unique samples (e.g. mixed
 pixel data with no repeats).
 
 ```
-[0x01] [n] [pa_lo pa_hi pb_lo pb_hi]×n
-           └────── u16 LE pair, n times ──────┘
+[0x01]  sample[0]  sample[1]  …  sample[n-1]  0xffff_ffff
+        └─────── u32 LE each ───────┘         └ sentinel ┘
 ```
 
-- `n` ∈ [1, 255]. Body = 1 + 4·n bytes.
-- Each `(pa, pb)` is `GPIOA->IDR` + `GPIOB->IDR` at one WR edge.
+- The sample list is terminated by the sentinel value
+  `0xffff_ffff`. There is no leading count, so the encoder can
+  stream samples straight to the wire without buffering to know
+  `n` up front.
+- `0xffff_ffff` is never a legal sample: captures are masked to
+  18 bits (`raw & 0x0003_ffff`) on both boards, so the high 14
+  bits are always 0. The sentinel is therefore unambiguous.
+- Each sample is `pa | pb << 16` — for the STM32 that is
+  `GPIOA->IDR | GPIOB->IDR << 16` at one WR edge.
+- Body = 4·(n + 1) bytes.
 
 A run of identical samples in the middle of a block forces the
 block to flush (tag=0x01 ends, tag=0x02 starts). Within a block,
@@ -229,7 +237,7 @@ The firmware's state machine:
 
 ```rust
 enum Event<'a> {
-    Block   { samples: &'a [u8] /* 4·n bytes, decode as (pa,pb) pairs */ },
+    Block   { samples: &'a [u8] /* 4·n bytes (sentinel excluded), (pa,pb) pairs */ },
     Run     { n: u16, pa: u16, pb: u16 },
     Tick    { t_us: u32, dt_us: u16, n_drained: u16, n_pending: u16, bytes_out: u32 },
     Repeat2 { val_a: u32, val_b: u32, run_lens: &'a [u8] /* terminator 0 not included */ },
@@ -239,17 +247,25 @@ enum Event<'a> {
     Stopped,
 }
 
+const SENTINEL: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+
 fn decode_frame(buf: &[u8]) -> Option<(Event<'_>, usize)> {
     if buf.is_empty() {
         return None;
     }
     match buf[0] {
-        0x01 if buf.len() >= 2 => {
-            let n = buf[1] as usize;
-            let needed = 2 + 4 * n;
-            (buf.len() >= needed).then(|| (Event::Block {
-                samples: &buf[2..needed],
-            }, needed))
+        0x01 => {
+            // Scan 4-byte samples until the 0xffff_ffff sentinel.
+            let mut off = 1;
+            loop {
+                if buf.len() < off + 4 {
+                    return None; // need more bytes
+                }
+                if buf[off..off + 4] == SENTINEL {
+                    return Some((Event::Block { samples: &buf[1..off] }, off + 4));
+                }
+                off += 4;
+            }
         }
         0x02 if buf.len() >= 7 => Some((Event::Run {
             n:  u16::from_le_bytes([buf[1], buf[2]]),

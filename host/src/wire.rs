@@ -119,21 +119,21 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
     };
     match tag {
         TAG_BLOCK => {
-            if buf.len() < 2 {
-                return Ok(None);
+            // Sample list of 4-byte LE u32s, terminated by the
+            // 0xffff_ffff sentinel. No leading count.
+            let mut samples = Vec::new();
+            let mut off = 1;
+            loop {
+                if buf.len() < off + 4 {
+                    return Ok(None); // need more bytes for the next word
+                }
+                let w = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+                off += 4;
+                if w == 0xffff_ffff {
+                    return Ok(Some((Event::Block(samples), off)));
+                }
+                samples.push(w);
             }
-            let n = buf[1] as usize;
-            let needed = 2 + 4 * n;
-            if buf.len() < needed {
-                return Ok(None);
-            }
-            let mut samples = Vec::with_capacity(n);
-            for i in 0..n {
-                let off = 2 + 4 * i;
-                let s = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
-                samples.push(s);
-            }
-            Ok(Some((Event::Block(samples), needed)))
         }
         TAG_RUN => {
             if buf.len() < 7 {

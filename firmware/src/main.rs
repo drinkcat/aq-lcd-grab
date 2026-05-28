@@ -142,7 +142,8 @@ impl PipeSink {
     fn account_dropped(&mut self, frame_size: usize) {
         self.dropped = self.dropped.saturating_add(frame_size as u32);
         let samples = match self.buf.first().copied() {
-            Some(wire::TAG_BLOCK) if self.buf.len() >= 2 => self.buf[1] as u32,
+            // BLOCK body = tag(1) + 4·n samples + 4-byte sentinel.
+            Some(wire::TAG_BLOCK) if frame_size >= 5 => ((frame_size - 5) / 4) as u32,
             Some(wire::TAG_RUN) if self.buf.len() >= 3 => {
                 u16::from_le_bytes([self.buf[1], self.buf[2]]) as u32
             }
