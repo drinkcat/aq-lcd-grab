@@ -15,7 +15,8 @@ mod encoder;
 mod sink;
 
 pub use encoder::{
-    Encoder, TAG_BLOCK, TAG_LOG, TAG_OVERRUN, TAG_RUN, TAG_STARTED, TAG_STOPPED, TAG_TICK,
+    Encoder, TAG_BLOCK, TAG_LOG, TAG_OVERRUN, TAG_REPEAT2, TAG_RUN, TAG_STARTED, TAG_STOPPED,
+    TAG_TICK,
 };
 pub use sink::Sink;
 

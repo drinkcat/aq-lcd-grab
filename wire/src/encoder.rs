@@ -24,6 +24,8 @@ use crate::Sink;
 pub const TAG_BLOCK: u8 = 0x01;
 /// `n` consecutive identical samples.
 pub const TAG_RUN: u8 = 0x02;
+/// A sequence of runs strictly alternating between two sample values.
+pub const TAG_REPEAT2: u8 = 0x03;
 
 // Side-band (control) frames. All live in the 0xFX range, away from the
 // low data tags, and are emitted via the `Encoder` methods so any open
@@ -43,6 +45,11 @@ pub const TAG_LOG: u8 = 0xFE;
 /// into back-to-back RUN frames.
 const MAX_RUN: u16 = u16::MAX;
 
+/// Largest run length representable as a REPEAT2 length byte (u8). A
+/// run longer than this can't join a REPEAT2 frame and falls back to a
+/// plain RUN.
+const MAX_REPEAT2_LEN: u16 = 255;
+
 /// Samples are masked to 18 bits on both boards, so `0xffff_ffff` is
 /// never a legal sample and can terminate the BLOCK sample list.
 const BLOCK_SENTINEL: u32 = 0xffff_ffff;
@@ -58,16 +65,44 @@ enum State {
     /// pushed but its sentinel has not. The next lone sample appends to
     /// it; a run or `flush` closes it.
     BlockOpen,
+    /// A REPEAT2 frame is open: its tag + `val_a`/`val_b` header and one
+    /// or more length bytes have been pushed but its `0x00` terminator
+    /// has not. Runs alternate `val_a, val_b, val_a, …`; `next_is_b`
+    /// gives the value the next run must match to extend the frame.
+    Repeat2Open {
+        val_a: u32,
+        val_b: u32,
+        next_is_b: bool,
+    },
+}
+
+/// One pending run: `len` consecutive identical `sample`s.
+#[derive(Clone, Copy, Default)]
+struct Run {
+    sample: u32,
+    len: u16,
+}
+
+impl Run {
+    fn new(sample: u32, len: u16) -> Self {
+        Self { sample, len }
+    }
 }
 
 /// Streaming encoder over packed `u32` samples.
 #[derive(Default)]
 pub struct Encoder {
-    /// The sample currently being run-length counted. Valid only when
-    /// `run_len > 0`.
-    run_sample: u32,
-    /// Length of the run in progress; 0 means no run pending.
-    run_len: u16,
+    /// The run currently being extended by `feed`. `len == 0` means no
+    /// run in progress.
+    run: Run,
+    /// Completed runs held back to test for a REPEAT2 alternation, in
+    /// temporal order (`deferred[0]` oldest). A REPEAT2 opens only once
+    /// a third run *confirms* the A/B pattern (`A, B, A`), so we hold up
+    /// to two candidates here while `state` is Idle/BlockOpen. Once a
+    /// REPEAT2 is open, completed runs extend it directly and this is
+    /// empty.
+    deferred: [Run; 2],
+    n_def: usize,
     /// Which frame is mid-emission on the sink.
     state: State,
 }
@@ -75,55 +110,135 @@ pub struct Encoder {
 impl Encoder {
     /// Drop all pending state. Call on STOP; the host re-syncs.
     ///
-    /// This does *not* close an open BLOCK on the wire — it forgets that
+    /// This does *not* close an open frame on the wire — it forgets that
     /// one was open. Only call when the stream is being abandoned (the
     /// host discards bytes until the STOPPED ack).
     pub fn reset(&mut self) {
-        self.run_len = 0;
+        self.run = Run::default();
+        self.n_def = 0;
         self.state = State::Idle;
     }
 
     /// Feed one packed sample.
     pub fn feed<S: Sink>(&mut self, sample: u32, sink: &mut S) {
         // Same sample as the run in progress: just extend it.
-        if self.run_len > 0 && sample == self.run_sample {
-            self.run_len += 1;
-            // A RUN frame caps at MAX_RUN edges; emit and start over.
-            if self.run_len == MAX_RUN {
-                self.emit_run(self.run_len, self.run_sample, sink);
-                self.run_len = 0;
+        if self.run.len > 0 && sample == self.run.sample {
+            self.run.len += 1;
+            // A RUN frame caps at MAX_RUN edges; complete the run so it
+            // is emitted (it can't grow into a single longer frame).
+            if self.run.len == MAX_RUN {
+                self.complete_run(sink);
             }
             return;
         }
 
-        // Different sample: the pending run is done. Resolve it, then
-        // start a fresh run-of-1 with the incoming sample.
-        self.resolve(sink);
-        self.run_sample = sample;
-        self.run_len = 1;
+        // Different sample: the run in progress is complete. Resolve it,
+        // then open a fresh run-of-1 with the incoming sample.
+        self.complete_run(sink);
+        self.run = Run::new(sample, 1);
     }
 
     /// Flush all pending state. Call at end-of-burst or on STOP.
     pub fn flush<S: Sink>(&mut self, sink: &mut S) {
-        self.resolve(sink);
+        self.complete_run(sink);
+        self.drain_deferred(sink);
         self.go_idle(sink);
         sink.flush();
     }
 
-    /// Resolve the pending run: a lone sample (len 1) joins the open
-    /// BLOCK; a real run (len ≥ 2) returns to idle (closing any open
-    /// BLOCK), then emits a RUN. Clears `run_len`. No-op when nothing is
-    /// pending.
-    fn resolve<S: Sink>(&mut self, sink: &mut S) {
-        match self.run_len {
-            0 => {}
-            1 => self.append_block(self.run_sample, sink),
-            len => {
-                self.go_idle(sink);
-                self.emit_run(len, self.run_sample, sink);
-            }
+    /// The run in progress is complete. Either extend an open REPEAT2
+    /// with it, or feed it into the candidate window — opening a REPEAT2
+    /// as soon as three runs confirm an `A, B, A` alternation. Until
+    /// then candidates are held; an unconfirmable oldest run is resolved
+    /// as a plain RUN / BLOCK sample and the window slides. Clears `run`.
+    fn complete_run<S: Sink>(&mut self, sink: &mut S) {
+        let incoming = self.run;
+        if incoming.len == 0 {
+            return;
         }
-        self.run_len = 0;
+        self.run = Run::default();
+
+        // Extend an open REPEAT2 if this run matches the alternation and
+        // fits a u8 length byte (len 1..=255 — a lone sample participates
+        // like any other run).
+        if let State::Repeat2Open { val_a, val_b, next_is_b } = self.state {
+            let expect = if next_is_b { val_b } else { val_a };
+            if incoming.sample == expect && incoming.len <= MAX_REPEAT2_LEN {
+                sink.push(incoming.len as u8);
+                self.state = State::Repeat2Open { val_a, val_b, next_is_b: !next_is_b };
+                return;
+            }
+            // Pattern broken (third value or overlong): close the frame
+            // and fall through to the candidate window (now empty).
+            self.go_idle(sink);
+        }
+
+        // Feed `incoming` into the candidate window.
+
+        // A run too long for a u8 length byte can never be in a REPEAT2:
+        // drain the window and emit it as a plain RUN.
+        if incoming.len > MAX_REPEAT2_LEN {
+            self.drain_deferred(sink);
+            self.go_idle(sink);
+            self.emit_run(incoming.len, incoming.sample, sink);
+            return;
+        }
+
+        if self.n_def < 2 {
+            self.deferred[self.n_def] = incoming;
+            self.n_def += 1;
+            return;
+        }
+
+        // Window is [a, b]; `incoming` is the third run c.
+        let a = self.deferred[0];
+        let b = self.deferred[1];
+        let c = incoming;
+        if a.sample == c.sample {
+            // Confirmed alternation a, b, a → open the frame.
+            self.go_idle(sink); // close any open BLOCK
+            sink.push(TAG_REPEAT2);
+            sink.push_u32(a.sample);
+            sink.push_u32(b.sample);
+            sink.push(a.len as u8);
+            sink.push(b.len as u8);
+            sink.push(c.len as u8);
+            self.n_def = 0;
+            self.state = State::Repeat2Open {
+                val_a: a.sample,
+                val_b: b.sample,
+                next_is_b: true, // a,b,a emitted; next run should be b
+            };
+            return;
+        }
+        // Not confirmed: `a` can't start a REPEAT2. Resolve it and slide
+        // the window down — `b` and `c` become the new candidate pair.
+        // (`c` fits a u8: the overlong check above already ruled it out.)
+        self.resolve_single(a, sink);
+        self.deferred[0] = b;
+        self.deferred[1] = c;
+        self.n_def = 2;
+    }
+
+    /// Emit a single unconfirmed run on its own: a lone sample joins the
+    /// BLOCK, a run of ≥ 2 becomes a plain RUN.
+    fn resolve_single<S: Sink>(&mut self, run: Run, sink: &mut S) {
+        if run.len == 1 {
+            self.append_block(run.sample, sink);
+        } else {
+            self.go_idle(sink);
+            self.emit_run(run.len, run.sample, sink);
+        }
+    }
+
+    /// Resolve every deferred candidate (oldest first) on its own. Used
+    /// at flush and whenever the candidate window must be cleared before
+    /// emitting another frame.
+    fn drain_deferred<S: Sink>(&mut self, sink: &mut S) {
+        for i in 0..self.n_def {
+            self.resolve_single(self.deferred[i], sink);
+        }
+        self.n_def = 0;
     }
 
     /// Append one lone sample to the BLOCK, starting the frame (tag) if
@@ -135,17 +250,27 @@ impl Encoder {
                 self.state = State::BlockOpen;
             }
             State::BlockOpen => {}
+            State::Repeat2Open { .. } => {
+                self.go_idle(sink);
+                sink.push(TAG_BLOCK);
+                self.state = State::BlockOpen;
+            }
         }
         sink.push_u32(sample);
     }
 
-    /// Terminate whatever frame is open and return to `Idle`. For a
-    /// BLOCK that means writing the sentinel. No-op when already idle.
+    /// Terminate whatever frame is open and return to `Idle`. BLOCK
+    /// writes the sentinel; REPEAT2 writes the `0x00` terminator. No-op
+    /// when already idle.
     fn go_idle<S: Sink>(&mut self, sink: &mut S) {
         match self.state {
             State::Idle => {}
             State::BlockOpen => {
                 sink.push_u32(BLOCK_SENTINEL);
+                self.state = State::Idle;
+            }
+            State::Repeat2Open { .. } => {
+                sink.push(0);
                 self.state = State::Idle;
             }
         }
@@ -198,7 +323,15 @@ impl Encoder {
 
     /// Emit an OVERRUN marker: `[0xFD][dropped:u32]`. `dropped` is the
     /// number of WR edges (samples) lost since the last overrun frame.
+    ///
+    /// Unlike the telemetry frames, OVERRUN marks a *position* in the
+    /// data stream — the gap is here. So it first flushes all pending
+    /// captured data (the in-progress run and any deferred candidates),
+    /// otherwise that data would land after the gap marker and the host
+    /// would mis-place the gap.
     pub fn overrun<S: Sink>(&mut self, dropped: u32, sink: &mut S) {
+        self.complete_run(sink);
+        self.drain_deferred(sink);
         self.go_idle(sink);
         sink.push(TAG_OVERRUN);
         sink.push_u32(dropped);
@@ -271,6 +404,16 @@ mod tests {
         v
     }
 
+    /// `run_lens` are the lengths of runs alternating val_a, val_b, …
+    fn repeat2_frame(val_a: u32, val_b: u32, run_lens: &[u8]) -> Vec<u8> {
+        let mut v = vec![TAG_REPEAT2];
+        v.extend_from_slice(&val_a.to_le_bytes());
+        v.extend_from_slice(&val_b.to_le_bytes());
+        v.extend_from_slice(run_lens);
+        v.push(0);
+        v
+    }
+
     #[test]
     fn empty_emits_nothing() {
         assert!(encode(&[]).is_empty());
@@ -302,7 +445,10 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_runs_of_different_samples() {
+    fn two_runs_alone_do_not_open_repeat2() {
+        // 7×2 then 9×3 — only two runs, no third to confirm the A/B
+        // alternation, so they stay as two plain RUNs (not a 2-run
+        // REPEAT2, which would be larger).
         assert_eq!(
             encode(&[7, 7, 9, 9, 9]),
             frames(&[run_frame(2, 7), run_frame(3, 9)]),
@@ -310,14 +456,139 @@ mod tests {
     }
 
     #[test]
-    fn run_resumes_after_a_breaking_sample() {
-        // A run, broken by one distinct sample, then the same value
-        // again must form a second run — not fold the lone sample and
-        // the resumed value into a confused block.
+    fn three_runs_confirm_and_open_repeat2() {
+        // A×2 B×3 A×2 — the third run (A) confirms the alternation and
+        // opens the frame with lens [2,3,2].
+        assert_eq!(encode(&[7, 7, 9, 9, 9, 7, 7]), repeat2_frame(7, 9, &[2, 3, 2]));
+    }
+
+    #[test]
+    fn alternating_runs_extend_one_repeat2() {
+        // A×2 B×2 A×3 B×4 A×2 — strict alternation, one frame.
+        let s = [1, 1, 2, 2, 1, 1, 1, 2, 2, 2, 2, 1, 1];
+        assert_eq!(encode(&s), repeat2_frame(1, 2, &[2, 2, 3, 4, 2]));
+    }
+
+    #[test]
+    fn len_one_runs_participate_in_repeat2() {
+        // 7×3 1×1 7×3 1×1 7×5 — a thin pattern where one side is a lone
+        // sample. The third run (7) confirms, and len-1 runs extend the
+        // frame: lens [3,1,3,1,5].
+        let s = [7, 7, 7, 1, 7, 7, 7, 1, 7, 7, 7, 7, 7];
+        assert_eq!(encode(&s), repeat2_frame(7, 1, &[3, 1, 3, 1, 5]));
+    }
+
+    #[test]
+    fn distinct_command_bytes_stay_a_block() {
+        // Four distinct single samples with no A/B/A alternation. None
+        // can confirm a REPEAT2, so they stay one compact BLOCK rather
+        // than a string of wasteful tiny REPEAT2 frames.
+        let s = [0x2a, 0x00, 0xa9, 0xb8];
+        assert_eq!(encode(&s), block_frame(&s));
+    }
+
+    #[test]
+    fn third_value_breaks_then_new_pair_needs_its_own_third() {
+        // A×2 B×2 A×2 (confirms -> REPEAT2 lens [2,2,2]) then C×2 D×2 —
+        // only two runs after the break, so they stay as plain RUNs.
+        let s = [1, 1, 2, 2, 1, 1, 3, 3, 4, 4];
         assert_eq!(
-            encode(&[5, 5, 9, 5, 5]),
-            frames(&[run_frame(2, 5), block_frame(&[9]), run_frame(2, 5)]),
+            encode(&s),
+            frames(&[
+                repeat2_frame(1, 2, &[2, 2, 2]),
+                run_frame(2, 3),
+                run_frame(2, 4),
+            ]),
         );
+    }
+
+    #[test]
+    fn two_run_pair_with_no_third_stays_two_runs() {
+        // A×2 B×2 then end — no confirming third run, two plain RUNs.
+        assert_eq!(
+            encode(&[5, 5, 8, 8]),
+            frames(&[run_frame(2, 5), run_frame(2, 8)]),
+        );
+    }
+
+    #[test]
+    fn single_run_with_no_partner_is_a_plain_run() {
+        // Only one run ever completes -> deferred, then flushed as RUN.
+        assert_eq!(encode(&[5, 5]), run_frame(2, 5));
+    }
+
+    #[test]
+    fn overlong_run_cannot_join_repeat2() {
+        // First run fits a u8 (200), second exceeds 255 -> no partnership;
+        // the 200-run flushes as a plain RUN, the long run splits.
+        let n = 300usize;
+        let mut s = vec![7u32; 200];
+        s.extend(std::iter::repeat(9).take(n));
+        // 7×200 deferred; 9×300 completes but >255 so can't partner:
+        // drain deferred (RUN 200,7), then 9-run emitted as plain RUN(s).
+        // 9×300 was split at MAX_RUN? No — 300 < MAX_RUN, so one RUN(300,9).
+        assert_eq!(
+            encode(&s),
+            frames(&[run_frame(200, 7), run_frame(300, 9)]),
+        );
+    }
+
+    #[test]
+    fn overlong_third_run_prevents_repeat2() {
+        // A×2 B×2 A×256 — the third run matches A but is too long for a
+        // u8 length byte, so it can't confirm a REPEAT2. The deferred A,B
+        // drain as plain RUNs and the long run follows as its own RUN.
+        let mut s = vec![1u32, 1, 2, 2];
+        s.extend(std::iter::repeat(1).take(256));
+        assert_eq!(
+            encode(&s),
+            frames(&[run_frame(2, 1), run_frame(2, 2), run_frame(256, 1)]),
+        );
+    }
+
+    #[test]
+    fn block_then_single_run_keeps_order() {
+        // lone 9 (BLOCK), then 5×2 with no partner — the BLOCK must
+        // close before the RUN, preserving temporal order.
+        assert_eq!(
+            encode(&[9, 5, 5]),
+            frames(&[block_frame(&[9]), run_frame(2, 5)]),
+        );
+    }
+
+    #[test]
+    fn block_then_repeat2() {
+        // lone 9, then a confirmed alternation 1×2 2×2 1×2 — the 9 goes
+        // to a BLOCK that closes before the REPEAT2 opens.
+        assert_eq!(
+            encode(&[9, 1, 1, 2, 2, 1, 1]),
+            frames(&[block_frame(&[9]), repeat2_frame(1, 2, &[2, 2, 2])]),
+        );
+    }
+
+    #[test]
+    fn repeat2_then_lone_sample_becomes_block() {
+        // 1×2 2×2 1×2 then lone 9 — REPEAT2 closes, 9 goes in a BLOCK.
+        assert_eq!(
+            encode(&[1, 1, 2, 2, 1, 1, 9]),
+            frames(&[repeat2_frame(1, 2, &[2, 2, 2]), block_frame(&[9])]),
+        );
+    }
+
+    #[test]
+    fn run_lone_run_confirms_repeat2() {
+        // 5×2 9×1 5×2 — three runs where the middle is a lone sample;
+        // the third (5) confirms the alternation, so this becomes one
+        // REPEAT2 with a len-1 middle run.
+        assert_eq!(encode(&[5, 5, 9, 5, 5]), repeat2_frame(5, 9, &[2, 1, 2]));
+    }
+
+    #[test]
+    fn lone_sample_can_be_repeat2_val_a() {
+        // 9×1 5×2 9×1 — the *first* run is a lone sample. It is still
+        // deferred (not dumped into a BLOCK), so the third run (9)
+        // confirms an alternation and it becomes val_a of a REPEAT2.
+        assert_eq!(encode(&[9, 5, 5, 9]), repeat2_frame(9, 5, &[1, 2, 1]));
     }
 
     #[test]
@@ -388,29 +659,27 @@ mod tests {
     }
 
     #[test]
-    fn signal_closes_an_open_block_first() {
-        // A lone sample opens a BLOCK; emitting a side-band frame
-        // mid-stream must terminate the BLOCK (sentinel) before the
-        // side-band tag, or the 0xFD would be parsed as a BLOCK sample.
-        // (feed(2) leaves sample 1 in the open BLOCK and sample 2 as a
-        // not-yet-emitted pending run, so only `1` is on the sink.)
+    fn overrun_flushes_pending_data_before_the_gap() {
+        // Two lone samples are pending (one deferred, one in progress).
+        // OVERRUN marks a data gap, so it must emit all that captured
+        // data — as a closed BLOCK — *before* the gap marker, not after.
         let mut enc = Encoder::default();
         let mut sink = VecSink::new();
         enc.feed(1, &mut sink);
         enc.feed(2, &mut sink);
         enc.overrun(0x42, &mut sink);
         enc.flush(&mut sink);
-        let mut want = block_frame(&[1]);
+        let mut want = block_frame(&[1, 2]);
         want.extend_from_slice(&[TAG_OVERRUN, 0x42, 0, 0, 0]);
-        want.extend_from_slice(&block_frame(&[2]));
         assert_eq!(sink.bytes, want);
     }
 
     #[test]
-    fn signal_leaves_a_pending_run_alive() {
-        // A RUN in progress is held in encoder state, not on the sink,
-        // so a side-band frame must NOT flush it — the run keeps
-        // accumulating and emits as one frame at the end.
+    fn tick_leaves_a_pending_run_alive() {
+        // A RUN in progress is held in encoder state, not on the sink.
+        // TICK is position-independent telemetry, so it must NOT flush
+        // the run — it keeps accumulating and emits as one frame at the
+        // end (preserving cross-drain run merging).
         let mut enc = Encoder::default();
         let mut sink = VecSink::new();
         enc.feed(7, &mut sink);

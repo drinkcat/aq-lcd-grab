@@ -41,7 +41,7 @@ pub enum Event {
     /// A tag=0x03 REPEAT2: a sequence of runs alternating between
     /// `val_a` and `val_b`. `run_lens[i]` is the length of run `i`;
     /// run 0 is `val_a`, run 1 is `val_b`, run 2 is `val_a`, etc.
-    /// All lengths are guaranteed ≥ 2.
+    /// Each length is 1..=255 (a lone sample may participate).
     Repeat2 {
         val_a: u32,
         val_b: u32,

@@ -90,19 +90,27 @@ to 1 byte at the cost of one shared 9-byte header per sequence.
 - `val_a`, `val_b` = the two distinct sample values that
   alternate. Run 0 is `val_a`, run 1 is `val_b`, run 2 is
   `val_a`, etc.
-- `run_lens[i]` = u8 length of run *i*. Runs are always ≥ 2
-  (lone samples never participate in REPEAT2) and ≤ 255 in
-  this encoding; runs longer than 255 force a REPEAT2 flush
-  and re-enter normal RUN encoding.
+- `run_lens[i]` = u8 length of run *i*, so each is 1..=255.
+  A run length of 1 (a lone sample) **is** allowed inside a
+  REPEAT2 — e.g. a one-pixel-wide pattern toggling against a
+  background. Runs longer than 255 can't be a length byte and
+  terminate the frame.
 - `0x00` terminates the run-length list (0 is never a valid
-  run length, so it's unambiguous). The frame contains ≥ 3
-  runs in practice — below that the encoder emits individual
-  RUN frames instead.
+  run length, so it's unambiguous).
 - Body size: 4 + 4 + n + 1 bytes for `n` runs.
 
-A third distinct sample value, or a run > 255, terminates
-the REPEAT2 frame; the encoder flushes what it has and
-resumes with normal RUN/BLOCK encoding.
+**Opening rule.** A REPEAT2 frame only opens once three
+consecutive runs confirm the alternation `A, B, A` (the third
+run repeats the first value). This avoids turning a short burst
+of distinct command bytes — which never repeat — into a string
+of tiny, wasteful 2-run frames; those stay as a BLOCK. The
+encoder defers up to two candidate runs while waiting for the
+confirming third; an unconfirmed run falls back to a plain RUN
+or a BLOCK sample.
+
+A third *distinct* sample value (one that doesn't match the
+alternation), or a run > 255, terminates the REPEAT2 frame; the
+encoder closes it and resumes with normal RUN/BLOCK encoding.
 
 ### tag = 0xFD — overrun marker (4-byte body)
 
