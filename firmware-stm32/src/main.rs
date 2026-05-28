@@ -141,9 +141,34 @@ async fn main(_spawner: Spawner) {
             &mut *core::ptr::addr_of_mut!(PB_BUF),
         )
     };
+    // Every wired data/control pin (see permute_f103 / README routing).
+    // Type-erased to AnyPin; Capture::new configures each as a floating
+    // input so undriven pins don't float and corrupt the IDR reads.
+    let data_pins = [
+        // GPIOA: PA1=DB8, PA2..4=DB11..13, PA5=CS
+        p.PA1.into(),
+        p.PA2.into(),
+        p.PA3.into(),
+        p.PA4.into(),
+        p.PA5.into(),
+        // GPIOB: PB0..1=DB14..15, PB5..12=DB0..7, PB13..14=DB9..10, PB15=DC
+        p.PB0.into(),
+        p.PB1.into(),
+        p.PB5.into(),
+        p.PB6.into(),
+        p.PB7.into(),
+        p.PB8.into(),
+        p.PB9.into(),
+        p.PB10.into(),
+        p.PB11.into(),
+        p.PB12.into(),
+        p.PB13.into(),
+        p.PB14.into(),
+        p.PB15.into(),
+    ];
     let mut capture = Capture::new(
         p.TIM2,
-        CapturePins { wr_etr: p.PA0 },
+        CapturePins { wr_etr: p.PA0, data: data_pins },
         p.DMA1_CH5, // TIM2_CH1 (input capture on TI1) -> PA ring
         p.DMA1_CH7, // TIM2_CH2 (input capture on TI1, alt) -> PB ring
         pa_buf,

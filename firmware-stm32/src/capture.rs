@@ -30,7 +30,7 @@
 use core::future::poll_fn;
 use core::task::Poll;
 use embassy_stm32::dma::{ReadableRingBuffer, TransferOptions};
-use embassy_stm32::gpio::{Input, Pull};
+use embassy_stm32::gpio::{AnyPin, Input, Pull};
 use embassy_stm32::pac;
 use embassy_stm32::peripherals::{PA0, TIM2};
 use embassy_stm32::timer::low_level::Timer;
@@ -47,7 +47,9 @@ use embassy_stm32::Peri;
 ///   PA2..PA4  = DB11..DB13 (R0..R2)
 ///   PA5       = CS (captured but unused in decode; masked out so its
 ///               toggling doesn't break RLE runs)
-/// Only the wired data bits (PA1..PA4) are kept.
+/// Wired data bits: PA1..PA4 (bits 1..4) = 0x001E. (PA1/PA2/PA3 are
+/// TIM2_CH2/3/4 but the timer doesn't claim them — CC2 uses the
+/// alternate TI1 mapping, CC3/CC4 are unused.)
 pub const PA_MASK: u16 = 0x001E;
 
 /// Blue Pill bench routing. GPIOB is the self-sufficient port — DC +
@@ -61,20 +63,28 @@ pub const PA_MASK: u16 = 0x001E;
 ///   PB15       = DC (framing signal; kept in the mask)
 pub const PB_MASK: u16 = 0xFFE3;
 
-/// Capture pin set. The data pins themselves don't need typed handles
-/// (we read GPIOA->IDR/GPIOB->IDR as whole ports), but PA0 must be held
-/// as input so nothing else claims it as an output.
+/// Number of data/control pins read via GPIOA/B->IDR (DB0..DB15 + DC +
+/// CS = 18). PA0/WR is the ETR clock and held separately.
+pub const DATA_PINS: usize = 18;
+
+/// Capture pin set. We read GPIOA->IDR/GPIOB->IDR as whole ports, so
+/// the data pins don't need *typed* handles — but they must be
+/// configured as inputs and the config must persist, or an undriven
+/// pin floats and IDR reads garbage. So the caller hands over every
+/// wired data/control pin (type-erased to `AnyPin`); `Capture::new`
+/// configures each as a floating input and holds it for `'d`. PA0/WR
+/// is separate because it is also the TIM2 ETR clock.
 pub struct CapturePins<'d> {
     pub wr_etr: Peri<'d, PA0>,
-    // Data + control pins are read via GPIOA/B->IDR directly; they just
-    // need to be configured as floating inputs somewhere. Caller passes
-    // them as a tuple-of-Inputs so we hold the borrow for safety.
-    // (Empty tuple is acceptable on Blue Pill bench rigs that just feed
-    // PA0 with a square-wave generator and don't care about data.)
+    pub data: [Peri<'d, AnyPin>; DATA_PINS],
 }
 
 pub struct Capture<'d> {
     _wr: Input<'d>,
+    /// Data/control pins held as floating inputs. Never read through
+    /// here (we read the whole port via IDR/DMA); held only so the
+    /// input config persists for `'d` and the pins don't float.
+    _data: [Input<'d>; DATA_PINS],
     _tim: Timer<'d, TIM2>,
     pa_ring: ReadableRingBuffer<'d, u16>,
     pb_ring: ReadableRingBuffer<'d, u16>,
@@ -126,9 +136,17 @@ impl<'d> Capture<'d> {
             "ring length must equal RING_CAP — fast_drain hardcodes the modulus mask"
         );
 
-        // PA12 = ETR input. F1 wants AF inputs as plain floating input
-        // (no AF mode bits — those are output-only on gpio_v1).
+        // PA0 = TIM2 ETR input. F1 wants AF inputs as plain floating
+        // input (no AF mode bits — those are output-only on gpio_v1).
         let wr = Input::new(pins.wr_etr, Pull::None);
+
+        // Configure every wired data/control pin as a floating input.
+        // Without this they default to whatever reset/other-peripheral
+        // state left them in; undriven pins float and corrupt the IDR
+        // reads (seen as 0xffff floods that break RLE). The target drives
+        // the bus actively, so Pull::None is correct — no pull to fight
+        // the driver.
+        let data = pins.data.map(|p| Input::new(p, Pull::None));
 
         // GPIOA->IDR and GPIOB->IDR live at fixed addresses; we read
         // them as half-words via DMA.
@@ -262,6 +280,7 @@ impl<'d> Capture<'d> {
 
         Self {
             _wr: wr,
+            _data: data,
             _tim: tim,
             pa_ring,
             pb_ring,

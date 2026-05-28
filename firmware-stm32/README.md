@@ -94,6 +94,13 @@ freeing PA13/PA14 as plain GPIO. We do that here: the flash path is
 the USART1 bootloader (PA9/PA10), so we don't need live SWD on the
 bench rig.
 
+PA1/PA2/PA3 are TIM2_CH2/CH3/CH4, but the capture does not claim them
+as timer pins: CC2's input is remapped to TI1/PA0 (the alternate
+`CCS=10` mapping — both DMA triggers fire off WR), and CC3/CC4 are
+never enabled. So all three read as ordinary GPIO and carry data
+(DB8/DB11/DB12) fine. Don't enable CC3/CC4 without freeing PA2/PA3
+first.
+
 Full GPIOA map (PA0–PA15) — WR + colour-refinement bits + CS. All
 non-reserved pins are read together in the single GPIOA->IDR DMA;
 "reserved" = not available for capture:
