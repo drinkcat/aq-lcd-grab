@@ -43,20 +43,23 @@ use embassy_stm32::Peri;
 ///
 /// Blue Pill bench routing (see firmware-stm32/README.md):
 ///   PA0       = WR (TIM2 ETR; not part of the data sample)
-///   PA1..PA7  = DB0..DB6
-/// All other PA bits are unused.
-pub const PA_MASK: u16 = 0x00FE;
+///   PA1       = DB8 (G3)
+///   PA2..PA4  = DB11..DB13 (R0..R2)
+///   PA5       = CS (captured but unused in decode; masked out so its
+///               toggling doesn't break RLE runs)
+/// Only the wired data bits (PA1..PA4) are kept.
+pub const PA_MASK: u16 = 0x001E;
 
-/// Blue Pill bench routing:
-///   PB0..PB1   = DB7..DB8
-///   PB2        = not exposed on the F103C8 package
+/// Blue Pill bench routing. GPIOB is the self-sufficient port — DC +
+/// low byte DB0..DB7 + the top two red (R4/R3) and green (G5/G4) bits:
+///   PB0..PB1   = DB14..DB15 (R3, R4)
+///   PB2        = BOOT1; skipped
 ///   PB3, PB4   = JTAG TDO / NJTRST at reset; skipped so we don't have
 ///                to fiddle with AFIO SWJ_CFG
-///   PB5..PB9   = DB11..DB15
-///   PB10..PB11 = DB9..DB10
-///   PB12       = DC
-///   PB13       = CS
-pub const PB_MASK: u16 = 0x3FE3;
+///   PB5..PB12  = DB0..DB7
+///   PB13..PB14 = DB9..DB10 (G4, G5)
+///   PB15       = DC (framing signal; kept in the mask)
+pub const PB_MASK: u16 = 0xFFE3;
 
 /// Capture pin set. The data pins themselves don't need typed handles
 /// (we read GPIOA->IDR/GPIOB->IDR as whole ports), but PA0 must be held

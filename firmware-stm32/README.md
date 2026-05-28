@@ -68,22 +68,101 @@ If you used the same adapter for flashing, close `stm32flash` first
 The PCB and final firmware will use TIM1/PA12 for WR, but bench
 development on a Blue Pill uses TIM2/PA0 because the Blue Pill ties
 PA12 to 3V3 through a 1.5 kΩ USB-DP pull-up that distorts an
-external WR signal. PB3/PB4 are skipped because they're JTAG outputs
-at reset and we don't bother disabling SWJ.
+external WR signal.
 
-| target FPC pin | Signal     | F103 pin  | Cable  |
-|-------------|------------|-----------|--------|
-| 22          | CS         | PB13      | orange |
-| 23          | DC         | PB12      | yellow |
-| 24          | WR         | PA0       | green  |
-| 2–8         | DB0–DB6    | PA1–PA7   |        |
-| 9–10        | DB7–DB8    | PB0–PB1   |        |
-| 11–12       | DB9–DB10   | PB10–PB11 |        |
-| 13–17       | DB11–DB15  | PB5–PB9   |        |
-| 1           | GND        | GND       |        |
+**Two-DMA routing, GPIOB self-sufficient.** WR clocks the capture on
+PA0 (fixed; TIM2 ETR). The two GPIO ports are read by separate DMA
+channels and can develop a one-sample pairing skew under sustained
+command bursts (the DMA arbiter services the two channels a cycle
+apart, by which time the PIC32 in the target has advanced the bus — see
+commit notes). To keep the rig useful even if one port's capture
+fails, we pack **everything needed to decode the command stream plus
+a colour image onto GPIOB alone**: DC (framing), the whole low data
+byte DB0–DB7 (every command opcode + the low colour bits), and the
+top two bits of each of red (R4/R3) and green (G5/G4) — the bits the
+capture data shows carry the most colour weight. A GPIOB-only read
+therefore decodes all commands *and* renders recognisable colour on
+its own. **GPIOA carries WR, the remaining upper-byte bits** (G3 +
+R0/R1/R2 — colour refinement that never holds command bits, so a
+GPIOA-DMA skew only smears pixel colour) **and CS** (unused in
+decode; DC frames the bus). Full fidelity needs both ports; GPIOB
+alone is the graceful-degradation fallback.
+
+SWD (PA13/PA14) cannot be remapped — the SW-DP pins are fixed in
+silicon — but it *can* be disabled (AFIO `SWJ_CFG = disabled`),
+freeing PA13/PA14 as plain GPIO. We do that here: the flash path is
+the USART1 bootloader (PA9/PA10), so we don't need live SWD on the
+bench rig.
+
+Full GPIOA map (PA0–PA15) — WR + colour-refinement bits + CS. All
+non-reserved pins are read together in the single GPIOA->IDR DMA;
+"reserved" = not available for capture:
+
+| F103 pin | Use            | target pin | Cable  | Notes                          |
+|----------|----------------|---------|--------|--------------------------------|
+| PA0      | WR (TIM2 ETR)  | 24      | green  | clocks the capture             |
+| PA1      | DB8 (G3)       | 10      |        |                                |
+| PA2      | DB11 (R0)      | 13      |        |                                |
+| PA3      | DB12 (R1)      | 14      |        |                                |
+| PA4      | DB13 (R2)      | 15      |        |                                |
+| PA5      | CS             | 22      | orange | not used in decode; DC frames  |
+| PA6      | —              | —       |        | free                           |
+| PA7      | —              | —       |        | free                           |
+| PA8      | —              | —       |        | free                           |
+| PA9      | USART1 TX      | —       |        | reserved (flash + log path)    |
+| PA10     | USART1 RX      | —       |        | reserved (flash + log path)    |
+| PA11     | —              | —       |        | free                           |
+| PA12     | —              | —       |        | reserved (USB-DP 1.5 kΩ pull-up) |
+| PA13     | —              | —       |        | free (SWDIO; SWJ off). Reset pull-up. |
+| PA14     | —              | —       |        | free (SWCLK; SWJ off). Reset pull-down. |
+| PA15     | —              | —       |        | free (JTDI; SWJ off). Reset pull-up. |
+
+Full GPIOB map (PB0–PB15) — the self-sufficient port: DC + low byte
+DB0–DB7 + the top two red (R4/R3) and top two green (G5/G4) bits. In
+pin order:
+
+| F103 pin | Use         | target pin | Cable  | Notes                        |
+|----------|-------------|---------|--------|------------------------------|
+| PB0      | DB14 (R3)   | 16      |        | red                          |
+| PB1      | DB15 (R4)   | 17      |        | red MSB                      |
+| PB2      | —           | —       |        | reserved (BOOT1)             |
+| PB3      | —           | —       |        | reserved (JTAG out at reset) |
+| PB4      | —           | —       |        | reserved (JTAG out at reset) |
+| PB5      | DB0         | 2       |        |                              |
+| PB6      | DB1         | 3       |        |                              |
+| PB7      | DB2         | 4       |        |                              |
+| PB8      | DB3         | 5       |        |                              |
+| PB9      | DB4         | 6       |        |                              |
+| PB10     | DB5         | 7       |        |                              |
+| PB11     | DB6         | 8       |        |                              |
+| PB12     | DB7         | 9       |        |                              |
+| PB13     | DB9 (G4)    | 11      |        | green                        |
+| PB14     | DB10 (G5)   | 12      |        | green MSB                    |
+| PB15     | DC          | 23      | yellow | framing signal               |
+
+Each port's bit order is free — re-order for clean PCB routing as
+long as `permute_f103` matches. PB2 (BOOT1) and PB3/PB4 (JTAG
+outputs at reset) are avoided. GPIOB is now full (DC + DB0–DB7 + 4
+colour bits); GPIOA has four free pins (PA11 and the ex-SWD trio
+PA13–PA15).
+
+Why this split: a GPIOB-only capture decodes the whole command
+stream *and* renders recognisable colour on its own. DB0–DB7 carries
+every opcode plus the low colour bits — across 1.88 M samples in
+`host/goodrun/run.bin` the low byte alone distinguishes the dominant
+fills (green, black, white, yellow, orange). Adding the top two bits
+of red (R4/R3) and green (G5/G4) is what makes the fallback image
+*coloured* rather than monochrome: those four bits are, per-channel,
+the most colour-faithful pair (keeping R4/R3 gives the lowest
+reconstruction error of any red pair, G5/G4 likewise for green).
+GPIOA holds only the lower colour-refinement bits (G3, R0–R2) plus
+the unused CS, so losing the GPIOA port costs colour depth, not
+legibility or basic colour.
 
 `host/src/permute.rs::permute_f103` knows this routing and
-unscrambles `(pa, pb)` back into logical `(data, dc, cs)`.
+unscrambles the GPIOB sample into logical `(data_lo, dc)` plus the
+high colour bits it carries, and the GPIOA sample into the remaining
+colour-refinement bits.
 
 ## Notes for the capture PCB vs the dev board
 
