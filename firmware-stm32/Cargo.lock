@@ -24,6 +24,7 @@ dependencies = [
 name = "aq-lcd-grab-fw-stm32"
 version = "0.1.0"
 dependencies = [
+ "aq-lcd-grab-wire",
  "cortex-m",
  "cortex-m-rt",
  "embassy-executor",
@@ -35,6 +36,10 @@ dependencies = [
  "embedded-io-async 0.7.0",
  "panic-halt",
 ]
+
+[[package]]
+name = "aq-lcd-grab-wire"
+version = "0.1.0"
 
 [[package]]
 name = "as-slice"

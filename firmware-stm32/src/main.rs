@@ -2,7 +2,6 @@
 #![no_main]
 
 mod capture;
-mod wire;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join3;
@@ -50,8 +49,10 @@ enum HostCmd {
 }
 
 /// `Sink` that pushes each byte straight into the BufferedUart's TX
-/// ring. When the ring is full, `push` spins on `blocking_write`
-/// until the ISR drains a byte (~10 µs at 921600 baud).
+/// ring. When the ring is full, `push` spins until the TX ISR drains a
+/// byte (~10 µs at 921600 baud) — the ISR runs independently of the
+/// executor, so a full ring never deadlocks. Never drops, so frames are
+/// always intact.
 struct UartSink<'a, 'd> {
     tx: &'a mut BufferedUartTx<'d>,
 }
@@ -63,20 +64,16 @@ impl<'a, 'd> UartSink<'a, 'd> {
 }
 
 impl<'a, 'd> Sink for UartSink<'a, 'd> {
-    fn write(&mut self, buf: &[u8]) {
-        // Spin until the whole slice is in the UART ring.
-        // `BufferedUartTx::write` short-writes when only part of the
-        // ring is free — loop on the remainder. A torn frame would
-        // desync the host's parser.
-        let mut off = 0;
-        while off < buf.len() {
-            match self.tx.write(&buf[off..]) {
-                Ok(0) => continue, // ring full — spin until ISR drains
-                Ok(n) => off += n,
-                Err(_) => return, // UART error; host will reset us
+    fn push(&mut self, b: u8) -> bool {
+        loop {
+            match self.tx.write(&[b]) {
+                Ok(0) => continue,      // ring full — spin until ISR drains
+                Ok(_) => return true,
+                Err(_) => return false, // UART error; host will reset us
             }
         }
     }
+    // `flush` defaults to a no-op: the TX ISR drains the ring on its own.
 }
 
 /// Capture ring lengths. 4096 half-words = 8 KiB per ring = 16 KiB
@@ -155,7 +152,7 @@ async fn main(_spawner: Spawner) {
 
     let mut encoder = Encoder::default();
     let mut sink = UartSink::new(&mut tx);
-    wire::encode_log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
+    encoder.log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
 
     // Disabled: trying to see if cap_fut alone gets higher
     // throughput without contention from the executor having to wake
@@ -198,7 +195,7 @@ async fn main(_spawner: Spawner) {
     // STARTED ack to sync.
     let mut state = StreamState::Streaming;
     STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
-    wire::encode_started(&mut sink);
+    encoder.started(&mut sink);
     let cap_fut = async {
         let mut samples = [0u32; DRAIN_CHUNK];
         // Time-based (not loop-tick-based) cadence for the periodic
@@ -229,7 +226,7 @@ async fn main(_spawner: Spawner) {
                             state = StreamState::Streaming;
                             STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
                         }
-                        wire::encode_started(&mut sink);
+                        encoder.started(&mut sink);
                     }
                     HostCmd::Stop => {
                         if state == StreamState::Streaming {
@@ -237,7 +234,7 @@ async fn main(_spawner: Spawner) {
                             state = StreamState::Stopped;
                             STREAMING.store(false, core::sync::atomic::Ordering::Relaxed);
                         }
-                        wire::encode_stopped(&mut sink);
+                        encoder.stopped(&mut sink);
                     }
                     HostCmd::Stats => {
                         let mut buf = [0u8; 96];
@@ -247,7 +244,7 @@ async fn main(_spawner: Spawner) {
                             pa_teif_count,
                             pb_teif_count,
                         );
-                        wire::encode_log(msg, &mut sink);
+                        encoder.log(msg, &mut sink);
                     }
                 }
             }
@@ -292,7 +289,7 @@ async fn main(_spawner: Spawner) {
                     let (pa_ndtr, pb_ndtr) = capture.peek_dma_ndtr();
                     let mut buf = [0u8; 48];
                     let msg = fmt_idle3(&mut buf, cnt, pa_ndtr, pb_ndtr);
-                    wire::encode_log(msg, &mut sink);
+                    encoder.log(msg, &mut sink);
                 }
             } else {
                 // Tight backlog drain. As long as the previous drain
@@ -318,7 +315,7 @@ async fn main(_spawner: Spawner) {
 
                 let dropped = capture.take_dropped();
                 if dropped > 0 {
-                    wire::encode_overrun(dropped, &mut sink);
+                    encoder.overrun(dropped, &mut sink);
                 }
 
                 last_idle_log = embassy_time::Instant::now();
@@ -333,7 +330,7 @@ async fn main(_spawner: Spawner) {
                     pa_teif_count,
                     pb_teif_count,
                 );
-                wire::encode_log(msg, &mut sink);
+                encoder.log(msg, &mut sink);
                 last_stats = embassy_time::Instant::now();
             }
 
