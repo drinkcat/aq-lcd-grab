@@ -35,7 +35,7 @@ const BLOCK_SENTINEL: u32 = 0xffff_ffff;
 
 /// What frame, if any, is currently open on the sink — bytes pushed but
 /// not yet terminated/flushed.
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 enum State {
     /// No frame open; the next sample starts one.
     #[default]
@@ -92,19 +92,20 @@ impl Encoder {
     /// Flush all pending state. Call at end-of-burst or on STOP.
     pub fn flush<S: Sink>(&mut self, sink: &mut S) {
         self.resolve(sink);
-        self.end_block(sink);
+        self.go_idle(sink);
         sink.flush();
     }
 
     /// Resolve the pending run: a lone sample (len 1) joins the open
-    /// BLOCK; a real run (len ≥ 2) ends the BLOCK, then emits a RUN.
-    /// Clears `run_len`. No-op when nothing is pending.
+    /// BLOCK; a real run (len ≥ 2) returns to idle (closing any open
+    /// BLOCK), then emits a RUN. Clears `run_len`. No-op when nothing is
+    /// pending.
     fn resolve<S: Sink>(&mut self, sink: &mut S) {
         match self.run_len {
             0 => {}
             1 => self.append_block(self.run_sample, sink),
             len => {
-                self.end_block(sink);
+                self.go_idle(sink);
                 self.emit_run(len, self.run_sample, sink);
             }
         }
@@ -114,25 +115,30 @@ impl Encoder {
     /// Append one lone sample to the BLOCK, starting the frame (tag) if
     /// the BLOCK isn't open yet.
     fn append_block<S: Sink>(&mut self, sample: u32, sink: &mut S) {
-        if self.state == State::Idle {
-            sink.push(TAG_BLOCK);
-            self.state = State::BlockOpen;
+        match self.state {
+            State::Idle => {
+                sink.push(TAG_BLOCK);
+                self.state = State::BlockOpen;
+            }
+            State::BlockOpen => {}
         }
         for &b in &sample.to_le_bytes() {
             sink.push(b);
         }
     }
 
-    /// Terminate the open BLOCK with the sentinel. No-op when no BLOCK
-    /// is open.
-    fn end_block<S: Sink>(&mut self, sink: &mut S) {
-        if self.state != State::BlockOpen {
-            return;
+    /// Terminate whatever frame is open and return to `Idle`. For a
+    /// BLOCK that means writing the sentinel. No-op when already idle.
+    fn go_idle<S: Sink>(&mut self, sink: &mut S) {
+        match self.state {
+            State::Idle => {}
+            State::BlockOpen => {
+                for &b in &BLOCK_SENTINEL.to_le_bytes() {
+                    sink.push(b);
+                }
+                self.state = State::Idle;
+            }
         }
-        for &b in &BLOCK_SENTINEL.to_le_bytes() {
-            sink.push(b);
-        }
-        self.state = State::Idle;
     }
 
     fn emit_run<S: Sink>(&mut self, len: u16, sample: u32, sink: &mut S) {
