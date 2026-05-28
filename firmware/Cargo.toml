@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+wire = { package = "aq-lcd-grab-wire", path = "../wire" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
 embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "binary-info", "unstable-pac"] }
 embassy-time = { version = "0.5" }

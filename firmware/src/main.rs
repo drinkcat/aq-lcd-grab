@@ -3,7 +3,6 @@
 
 mod picotool_reset;
 mod pio_capture;
-mod wire;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::{join, join3};
@@ -87,117 +86,44 @@ enum HostCmd {
     Stats,
 }
 
-/// `Sink` that stages each frame into a small scratch buffer, then
-/// atomically pushes the whole frame into the TX pipe on
-/// `commit_frame()`. If the pipe can't fit the frame, the whole frame
-/// is discarded — never a partial. This is essential for wire-format
-/// integrity: a half-emitted frame would desync the host's parser.
-///
-/// Max frame size is bounded by tag=0x01 with n=255 → 2 + 4*255 = 1022 B.
-/// Round up to 1024 for headroom.
-const SINK_FRAME_MAX: usize = 1024;
+/// `Sink` that writes wire bytes straight into the TX pipe. When the
+/// pipe is full a byte is dropped and counted — the host tolerates a
+/// torn frame by resyncing (STOP → drain → START) on the next bad
+/// parse, so we don't stage whole frames. Backpressure shows up at the
+/// capture layer instead: a full pipe slows the drain loop and the PIO
+/// ring overruns, which `capture.take_dropped()` already reports.
 struct PipeSink {
-    buf: [u8; SINK_FRAME_MAX],
-    n: usize,
-    /// True if any push in the current frame overflowed the scratch.
-    overflowed: bool,
-    /// Bytes discarded since boot — sum of dropped frame sizes. STATS
-    /// surfaces this; it isn't strictly needed for wire integrity.
+    /// Bytes dropped since boot because the TX pipe was full. STATS
+    /// surfaces this as a TX-path health signal.
     dropped: u32,
-    /// Samples (= WR edges) lost to dropped BLOCK/RUN frames, *not yet*
-    /// reported to the host. The capture task drains this into a
-    /// `tag=0xFD` overrun frame at the next opportunity so the host
-    /// knows a gap exists. Cleared on every successful drain.
-    pending_dropped_samples: u32,
-    /// Cumulative bytes successfully enqueued to TX_PIPE since boot,
-    /// *excluding* tag=0xFA TICK frames so the counter reflects the
-    /// real BLOCK/RUN/LOG/OVERRUN/ACK payload — the thing whose ratio
-    /// to sample count matters for compression analysis. Wraps every
-    /// ~4 GB; the capture task diffs against a per-tick baseline.
+    /// Cumulative bytes successfully enqueued to TX_PIPE since boot.
+    /// Wraps every ~4 GB; the capture task diffs against a per-tick
+    /// baseline for the compression-ratio telemetry. A window's single
+    /// TICK frame is emitted *after* its `bytes_out` delta is read and
+    /// the baseline re-captured, so TICK bytes never inflate a window.
     bytes_out: u32,
 }
 
 impl PipeSink {
     const fn new() -> Self {
         Self {
-            buf: [0; SINK_FRAME_MAX],
-            n: 0,
-            overflowed: false,
             dropped: 0,
-            pending_dropped_samples: 0,
             bytes_out: 0,
         }
-    }
-
-    /// Pull and reset the accumulated count of samples lost to TX-pipe
-    /// drops. The capture task calls this to fold pipe drops into the
-    /// same overrun frame it already emits for PIO-ring drops.
-    fn take_dropped_samples(&mut self) -> u32 {
-        core::mem::replace(&mut self.pending_dropped_samples, 0)
-    }
-
-    /// Account a dropped frame. Looks at the staged tag/n to decide
-    /// how many samples (WR edges) the dropped frame would have
-    /// represented; non-sample frames (log, overrun, acks) count 0.
-    fn account_dropped(&mut self, frame_size: usize) {
-        self.dropped = self.dropped.saturating_add(frame_size as u32);
-        let samples = match self.buf.first().copied() {
-            // BLOCK body = tag(1) + 4·n samples + 4-byte sentinel.
-            Some(wire::TAG_BLOCK) if frame_size >= 5 => ((frame_size - 5) / 4) as u32,
-            Some(wire::TAG_RUN) if self.buf.len() >= 3 => {
-                u16::from_le_bytes([self.buf[1], self.buf[2]]) as u32
-            }
-            _ => 0,
-        };
-        self.pending_dropped_samples = self.pending_dropped_samples.saturating_add(samples);
     }
 }
 
 impl Sink for PipeSink {
     fn push(&mut self, b: u8) -> bool {
-        if self.n < self.buf.len() {
-            self.buf[self.n] = b;
-            self.n += 1;
-            true
-        } else {
-            self.overflowed = true;
-            false
-        }
-    }
-
-    fn commit_frame(&mut self) {
-        let frame_size = self.n;
-        self.n = 0;
-        if self.overflowed {
-            // Scratch overflowed — encoder bug or a frame larger than
-            // SINK_FRAME_MAX. Either way the frame is unusable.
-            self.account_dropped(frame_size);
-            self.overflowed = false;
-            return;
-        }
-        // All-or-nothing: only enqueue when the whole frame fits, so the
-        // pipe never carries a torn frame.
-        if TX_PIPE.free_capacity() < frame_size {
-            self.account_dropped(frame_size);
-            return;
-        }
-        // `try_write` returns the size of the largest *contiguous* free
-        // region, which can be smaller than `free_capacity()` near the
-        // ring's wrap point. Loop until the whole frame is in. We hold
-        // the only writer, so progress is guaranteed — each call
-        // returns ≥ 1 byte until the frame is fully buffered.
-        let mut off = 0;
-        while off < frame_size {
-            match TX_PIPE.try_write(&self.buf[off..frame_size]) {
-                Ok(n) => off += n,
-                Err(_) => unreachable!("free_capacity was pre-checked"),
+        match TX_PIPE.try_write(&[b]) {
+            Ok(_) => {
+                self.bytes_out = self.bytes_out.wrapping_add(1);
+                true
             }
-        }
-        // Tally everything except TICK frames — TICK reports its own
-        // counter, so including TICK bytes would make the counter
-        // self-amplifying noise the host has to subtract back out.
-        if self.buf.first().copied() != Some(wire::TAG_TICK) {
-            self.bytes_out = self.bytes_out.wrapping_add(frame_size as u32);
+            Err(_) => {
+                self.dropped = self.dropped.saturating_add(1);
+                false
+            }
         }
     }
 }
@@ -302,7 +228,7 @@ async fn main(_spawner: Spawner) {
 
     let mut encoder = Encoder::default();
     let mut sink = PipeSink::new();
-    wire::encode_log("aq-lcd-grab pico firmware booted, awaiting START", &mut sink);
+    encoder.log("aq-lcd-grab pico firmware booted, awaiting START", &mut sink);
 
     let usb_fut = usb.run();
 
@@ -405,16 +331,16 @@ async fn main(_spawner: Spawner) {
                             encoder.reset();
                             state = StreamState::Streaming;
                         }
-                        wire::encode_started(&mut sink);
+                        encoder.started(&mut sink);
                     }
                     HostCmd::Stop => {
                         if state == StreamState::Streaming {
                             encoder.flush(&mut sink);
                             state = StreamState::Stopped;
                         }
-                        wire::encode_stopped(&mut sink);
+                        encoder.stopped(&mut sink);
                     }
-                    HostCmd::LogTest => wire::encode_log("ping", &mut sink),
+                    HostCmd::LogTest => encoder.log("ping", &mut sink),
                     HostCmd::Stats => {
                         let mut msg = heapless::String::<64>::new();
                         use core::fmt::Write as _;
@@ -424,7 +350,7 @@ async fn main(_spawner: Spawner) {
                             sink.dropped,
                             capture.peek_dropped(),
                         );
-                        wire::encode_log(&msg, &mut sink);
+                        encoder.log(&msg, &mut sink);
                     }
                 }
             }
@@ -457,14 +383,14 @@ async fn main(_spawner: Spawner) {
             }
 
             if total > 0 && state == StreamState::Streaming {
-                // Per-drain: flush only the in-progress BLOCK (unique
-                // bursts gain nothing from waiting), but leave any
-                // in-progress RUN alive so a uniform fill spanning
-                // many drains merges into one big RUN frame instead
-                // of N small ones (the previous full-flush behaviour
-                // shipped one ~30-sample RUN per drain even when the
-                // run was the same sample for hundreds of edges).
-                encoder.flush_block_only(&mut sink);
+                // Per-drain transport flush. BLOCK samples already
+                // streamed to the sink during `feed` — only a RUN in
+                // progress is held in encoder state, and we leave it
+                // alive so a uniform fill spanning many drains merges
+                // into one big RUN instead of one small RUN per drain.
+                // TODO: we only want to force-flush when the bus is
+                // idle, not on every drain.
+                sink.flush();
             }
 
             // Tick aggregation: sum drains across the window so a
@@ -489,13 +415,13 @@ async fn main(_spawner: Spawner) {
                             .duration_since(tick_t0)
                             .as_micros()
                             .min(u16::MAX as u64) as u16;
-                        wire::encode_tick(t_us, dt_us, n_drained, n_pending, bytes_delta, &mut sink);
+                        encoder.tick(t_us, dt_us, n_drained, n_pending, bytes_delta, &mut sink);
                     }
                     last_tick = now;
                     tick_t0 = now;
                     tick_drained = 0;
-                    // Re-baseline *after* encode_tick so its own bytes
-                    // (which PipeSink excludes anyway) don't matter.
+                    // Re-baseline *after* the TICK so its own bytes fall
+                    // outside the next window's delta.
                     tick_bytes_baseline = sink.bytes_out;
                 }
             } else {
@@ -508,25 +434,22 @@ async fn main(_spawner: Spawner) {
                 tick_bytes_baseline = sink.bytes_out;
             }
 
-            // Overrun reporting. Combine PIO-ring drops (capture
-            // overran the DMA buffer) and TX-pipe drops (encoder
-            // produced frames faster than USB could ship them) into a
-            // single tag=0xFD frame — both manifest the same way on
-            // the host: a gap of N missing WR edges in the stream.
+            // Overrun reporting: sample-accurate PIO-ring drops (capture
+            // overran the DMA buffer). TX-pipe byte drops are a separate,
+            // non-sample-exact signal surfaced via STATS, not folded in
+            // here.
             if state == StreamState::Streaming {
                 let from_capture = capture.take_dropped();
-                let from_pipe = sink.take_dropped_samples();
-                let total_dropped = from_capture.saturating_add(from_pipe);
-                if total_dropped > 0 {
-                    wire::encode_overrun(total_dropped, &mut sink);
+                if from_capture > 0 {
+                    encoder.overrun(from_capture, &mut sink);
                 }
             }
 
             // Always yield once per outer iteration. Under sustained
             // capture, the inner `capture.drain` loop never returns
             // zero, so without this yield the TX and RX tasks would
-            // never get scheduled — the pipe would fill and frames
-            // would start getting dropped at `commit_frame`.
+            // never get scheduled — the pipe would fill and bytes
+            // would start getting dropped at `push`.
             embassy_futures::yield_now().await;
 
             if total == 0 {
@@ -541,7 +464,7 @@ async fn main(_spawner: Spawner) {
                 idle_ticks = idle_ticks.wrapping_add(1);
                 if idle_ticks.is_multiple_of(2500) && state == StreamState::Streaming {
                     // ~5 s heartbeat while streaming idle.
-                    wire::encode_log("idle", &mut sink);
+                    encoder.log("idle", &mut sink);
                 }
                 Timer::after_millis(2).await;
             } else {

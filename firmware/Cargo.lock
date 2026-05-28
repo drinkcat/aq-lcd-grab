@@ -27,6 +27,7 @@ dependencies = [
 name = "aq-lcd-grab-fw"
 version = "0.1.0"
 dependencies = [
+ "aq-lcd-grab-wire",
  "cortex-m",
  "cortex-m-rt",
  "embassy-executor",
@@ -41,6 +42,10 @@ dependencies = [
  "panic-halt",
  "static_cell",
 ]
+
+[[package]]
+name = "aq-lcd-grab-wire"
+version = "0.1.0"
 
 [[package]]
 name = "arrayvec"
