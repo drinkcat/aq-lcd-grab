@@ -179,16 +179,14 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             Ok(Some((Event::Overrun { dropped }, 5)))
         }
         TAG_LOG => {
-            if buf.len() < 3 {
+            // UTF-8 text terminated by a NUL byte (never present in the
+            // firmware's log text). Scan for it; wait for more bytes if
+            // it isn't here yet.
+            let Some(nul_off) = buf[1..].iter().position(|&b| b == 0) else {
                 return Ok(None);
-            }
-            let len = u16::from_le_bytes([buf[1], buf[2]]) as usize;
-            let needed = 3 + len;
-            if buf.len() < needed {
-                return Ok(None);
-            }
-            let msg = String::from_utf8_lossy(&buf[3..needed]).into_owned();
-            Ok(Some((Event::Log(msg), needed)))
+            };
+            let msg = String::from_utf8_lossy(&buf[1..1 + nul_off]).into_owned();
+            Ok(Some((Event::Log(msg), 1 + nul_off + 1)))
         }
         TAG_STARTED => Ok(Some((Event::Started, 1))),
         TAG_STOPPED => Ok(Some((Event::Stopped, 1))),

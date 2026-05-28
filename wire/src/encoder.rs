@@ -25,6 +25,20 @@ pub const TAG_BLOCK: u8 = 0x01;
 /// `n` consecutive identical samples.
 pub const TAG_RUN: u8 = 0x02;
 
+// Side-band (control) frames. All live in the 0xFX range, away from the
+// low data tags, and are emitted via the `Encoder` methods so any open
+// BLOCK is closed first — a tag landing mid-BLOCK would corrupt the wire.
+/// Drain-tick telemetry heartbeat.
+pub const TAG_TICK: u8 = 0xFA;
+/// STARTED acknowledgement.
+pub const TAG_STARTED: u8 = 0xFB;
+/// STOPPED acknowledgement.
+pub const TAG_STOPPED: u8 = 0xFC;
+/// Dropped-sample (capture gap) marker.
+pub const TAG_OVERRUN: u8 = 0xFD;
+/// Out-of-band UTF-8 log line.
+pub const TAG_LOG: u8 = 0xFE;
+
 /// Largest run length a single RUN frame can carry. Longer runs split
 /// into back-to-back RUN frames.
 const MAX_RUN: u16 = u16::MAX;
@@ -142,6 +156,81 @@ impl Encoder {
         sink.push_u16(len);
         sink.push_u32(sample);
     }
+
+    // ---- Side-band (control) frames ----
+    //
+    // Each closes any open BLOCK first (`go_idle`) so its tag never
+    // lands inside a BLOCK's sample list, then writes its own frame and
+    // flushes it to the wire. A pending RUN is *not* on the sink yet, so
+    // it is left alive — a uniform fill spanning many drains still
+    // merges into one big RUN.
+
+    /// Emit a STARTED ack (`[0xFB]`) — firmware acknowledged START.
+    pub fn started<S: Sink>(&mut self, sink: &mut S) {
+        self.go_idle(sink);
+        sink.push(TAG_STARTED);
+        sink.flush();
+    }
+
+    /// Emit a STOPPED ack (`[0xFC]`) — firmware acknowledged STOP.
+    pub fn stopped<S: Sink>(&mut self, sink: &mut S) {
+        self.go_idle(sink);
+        sink.push(TAG_STOPPED);
+        sink.flush();
+    }
+
+    /// Emit a LOG frame: `[0xFE][utf8 bytes][0x00]`. The payload is
+    /// NUL-terminated rather than length-prefixed so it can stream
+    /// straight to the wire. A finite sink drops the overflow, bounding
+    /// the frame on its own.
+    ///
+    /// `msg` must not contain an embedded NUL (`0x00`) — a NUL would be
+    /// read as the terminator and the host would parse the remainder as
+    /// a new frame, desyncing the stream. Firmware log text (banners,
+    /// stats) never contains a NUL, so this is left to the caller.
+    pub fn log<S: Sink>(&mut self, msg: &str, sink: &mut S) {
+        self.go_idle(sink);
+        sink.push(TAG_LOG);
+        sink.push_bytes(msg.as_bytes());
+        sink.push(0);
+        sink.flush();
+    }
+
+    /// Emit an OVERRUN marker: `[0xFD][dropped:u32]`. `dropped` is the
+    /// number of WR edges (samples) lost since the last overrun frame.
+    pub fn overrun<S: Sink>(&mut self, dropped: u32, sink: &mut S) {
+        self.go_idle(sink);
+        sink.push(TAG_OVERRUN);
+        sink.push_u32(dropped);
+        sink.flush();
+    }
+
+    /// Emit a drain-TICK frame:
+    /// `[0xFA][t_us:u32][dt_us:u16][n_drained:u16][n_pending:u16][bytes_out:u32]`.
+    ///
+    /// - `t_us`: firmware clock at the start of the drain pass (µs, wraps).
+    /// - `dt_us`: wall-clock duration of the drain pass.
+    /// - `n_drained`: samples consumed this pass.
+    /// - `n_pending`: samples still in the capture ring after draining.
+    /// - `bytes_out`: bytes enqueued this window, excluding TICK frames.
+    pub fn tick<S: Sink>(
+        &mut self,
+        t_us: u32,
+        dt_us: u16,
+        n_drained: u16,
+        n_pending: u16,
+        bytes_out: u32,
+        sink: &mut S,
+    ) {
+        self.go_idle(sink);
+        sink.push(TAG_TICK);
+        sink.push_u32(t_us);
+        sink.push_u16(dt_us);
+        sink.push_u16(n_drained);
+        sink.push_u16(n_pending);
+        sink.push_u32(bytes_out);
+        sink.flush();
+    }
 }
 
 #[cfg(test)]
@@ -239,5 +328,99 @@ mod tests {
             encode(&vec![0xC; n]),
             frames(&[run_frame(MAX_RUN, 0xC), run_frame(10, 0xC)]),
         );
+    }
+
+    // ---- side-band signals ----
+
+    /// Run a side-band method on a fresh encoder/sink and return bytes.
+    fn signal(f: impl FnOnce(&mut Encoder, &mut VecSink)) -> Vec<u8> {
+        let mut enc = Encoder::default();
+        let mut sink = VecSink::new();
+        f(&mut enc, &mut sink);
+        sink.bytes
+    }
+
+    #[test]
+    fn started_is_one_byte() {
+        assert_eq!(signal(|e, s| e.started(s)), vec![TAG_STARTED]);
+    }
+
+    #[test]
+    fn stopped_is_one_byte() {
+        assert_eq!(signal(|e, s| e.stopped(s)), vec![TAG_STOPPED]);
+    }
+
+    #[test]
+    fn log_frames_text_nul_terminated() {
+        assert_eq!(
+            signal(|e, s| e.log("hi", s)),
+            vec![TAG_LOG, b'h', b'i', 0],
+        );
+    }
+
+    #[test]
+    fn log_passes_full_payload_through() {
+        let msg = "x".repeat(500);
+        let out = signal(|e, s| e.log(&msg, s));
+        assert_eq!(out.len(), 1 + 500 + 1); // tag + payload + NUL
+        assert_eq!(out[0], TAG_LOG);
+        assert_eq!(*out.last().unwrap(), 0);
+    }
+
+    #[test]
+    fn overrun_carries_u32_le() {
+        assert_eq!(
+            signal(|e, s| e.overrun(0x0A0B0C0D, s)),
+            vec![TAG_OVERRUN, 0x0D, 0x0C, 0x0B, 0x0A],
+        );
+    }
+
+    #[test]
+    fn tick_field_order_is_le() {
+        let out = signal(|e, s| e.tick(0x11223344, 0x5566, 0x7788, 0x99AA, 0xBBCCDDEE, s));
+        let mut want = vec![TAG_TICK];
+        want.extend_from_slice(&0x11223344u32.to_le_bytes());
+        want.extend_from_slice(&0x5566u16.to_le_bytes());
+        want.extend_from_slice(&0x7788u16.to_le_bytes());
+        want.extend_from_slice(&0x99AAu16.to_le_bytes());
+        want.extend_from_slice(&0xBBCCDDEEu32.to_le_bytes());
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn signal_closes_an_open_block_first() {
+        // A lone sample opens a BLOCK; emitting a side-band frame
+        // mid-stream must terminate the BLOCK (sentinel) before the
+        // side-band tag, or the 0xFD would be parsed as a BLOCK sample.
+        // (feed(2) leaves sample 1 in the open BLOCK and sample 2 as a
+        // not-yet-emitted pending run, so only `1` is on the sink.)
+        let mut enc = Encoder::default();
+        let mut sink = VecSink::new();
+        enc.feed(1, &mut sink);
+        enc.feed(2, &mut sink);
+        enc.overrun(0x42, &mut sink);
+        enc.flush(&mut sink);
+        let mut want = block_frame(&[1]);
+        want.extend_from_slice(&[TAG_OVERRUN, 0x42, 0, 0, 0]);
+        want.extend_from_slice(&block_frame(&[2]));
+        assert_eq!(sink.bytes, want);
+    }
+
+    #[test]
+    fn signal_leaves_a_pending_run_alive() {
+        // A RUN in progress is held in encoder state, not on the sink,
+        // so a side-band frame must NOT flush it — the run keeps
+        // accumulating and emits as one frame at the end.
+        let mut enc = Encoder::default();
+        let mut sink = VecSink::new();
+        enc.feed(7, &mut sink);
+        enc.feed(7, &mut sink); // run of 2 pending, nothing on sink yet
+        enc.tick(0, 0, 0, 0, 0, &mut sink);
+        enc.feed(7, &mut sink); // extends to 3
+        enc.flush(&mut sink);
+        let mut want = vec![TAG_TICK];
+        want.extend_from_slice(&[0; 14]); // all-zero tick body
+        want.extend_from_slice(&run_frame(3, 7));
+        assert_eq!(sink.bytes, want);
     }
 }

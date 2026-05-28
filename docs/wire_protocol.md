@@ -1,8 +1,10 @@
-# Capture-board wire protocol (STM32 ↔ host)
+# Capture-board wire protocol (capture board ↔ host)
 
-The STM32F103 captures the target device display bus and ships frames out
-USART1 (PA9 TX, PA10 RX) at **921600 8N1**. This document describes
-the on-wire format in both directions.
+A capture board taps the display bus and ships tagged frames to the
+host. Both supported boards emit the same format from the shared `wire`
+crate; only the transport differs — the STM32F103 streams over USART1
+(PA9 TX, PA10 RX) at **921600 8N1**, the Pico over USB CDC. This
+document describes the on-wire format in both directions.
 
 ## Design constraints
 
@@ -75,7 +77,7 @@ frames back-to-back.
 
 A sequence of same-sample runs that strictly alternate between
 two distinct sample values. Optimised for B&W pixel rendering
-on the target device where the bus toggles between `0xFFFF` and
+on the display where the bus toggles between `0xFFFF` and
 `0x0000` every few-to-tens of WR edges — naïve RLE wastes
 ~7 bytes of header per toggle; this frame collapses each toggle
 to 1 byte at the cost of one shared 9-byte header per sequence.
@@ -120,12 +122,15 @@ samples. Helps the host mark gaps.
 Out-of-band UTF-8 text from the firmware (boot banner, periodic stats).
 
 ```
-[0xFE] [len_lo] [len_hi] [utf8 bytes × len]
-       └── u16 LE ──┘
+[0xFE] [utf8 bytes …] [0x00]
+       └── payload ─┘  └ NUL ┘
 ```
 
-`len` ≤ 256; longer messages are truncated by the firmware. Trailing
-newline is **not** included.
+- The payload is terminated by a `0x00` byte, not length-prefixed, so
+  the encoder can stream it straight to the wire without knowing the
+  length up front. Firmware log text never contains an embedded NUL.
+- Trailing newline is **not** included. The message is bounded only by
+  the sink: an overlong line is truncated where the sink fills.
 
 ### tag = 0xFB — STARTED acknowledgement (0-byte body)
 
@@ -235,11 +240,12 @@ The firmware's state machine:
 
 ## Host-side decode
 
-The authoritative decoder is `host/src/wire.rs` (`Decoder` /
-`parse_one`). After decoding, the host applies the permutation
-table to turn `(pa, pb)` into `(data: u16, dc: bool, cs: bool)`,
-then feeds the result into the existing protocol decoder (which
-expects ILI9488-style command bytes + RGB565 pixel data).
+The encoder lives in the shared `wire` crate (`Encoder`); the host
+decoder is `host/src/wire.rs` (`Decoder` / `parse_one`). After
+decoding, the host applies the permutation table to turn `(pa, pb)`
+into `(data: u16, dc: bool, cs: bool)`, then feeds the result into
+the existing protocol decoder (which expects ILI9488-style command
+bytes + RGB565 pixel data).
 
 ## Bandwidth budget
 
@@ -253,7 +259,7 @@ At 921600 baud (≈ 92 kB/s after 10-bit framing per character):
 | All unique pixels     | 667k single     | ~3.3 MB/s | -3500%   |
 
 The last two rows are pathological. The capture board's purpose is
-to record the target's actual display traffic, which is mostly large
+to record the display's actual traffic, which is mostly large
 solid fills (sensor-value backgrounds) and short command bursts —
 the median ratio in practice should be well under 92 kB/s. The
 `tag=0xFD overrun` frame is the firmware's safety valve when reality
