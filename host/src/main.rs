@@ -24,8 +24,9 @@ use wire::{Decoder as WireDecoder, Event, HOST_CMD_START, HOST_CMD_STOP};
 enum Board {
     /// Pico 2 W (USB CDC, GPIO0..15 = DB0..15, GPIO16=DC, GPIO17=CS).
     Pico,
-    /// F103 capture board (UART, PA0..7=DB0..7, PB0..1/PB3..8=DB8..15,
-    /// PB10=DC, PB11=CS).
+    /// F103 capture board (USART1/FTDI). See permute::permute_f103 for
+    /// the pin→bit routing; GPIOB carries DC + low byte + the top red
+    /// and green bits, GPIOA the lower colour bits + CS.
     F103,
 }
 
@@ -36,14 +37,25 @@ impl Board {
             Board::F103 => permute::permute_f103(sample),
         }
     }
+
+    /// Serial device this board enumerates as when no `--port` is given.
+    /// The Pico is native USB-CDC (ttyACM); the F103 talks over an
+    /// external FTDI adapter on USART1 (ttyUSB).
+    fn default_port(self) -> &'static str {
+        match self {
+            Board::Pico => "/dev/ttyACM0",
+            Board::F103 => "/dev/ttyUSB0",
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
 #[command(about = "Live viewer for the aq-lcd-grab firmware capture stream")]
 struct Args {
-    /// Serial device the firmware is logging on.
-    #[arg(short, long, default_value = "/dev/ttyACM0")]
-    port: String,
+    /// Serial device the firmware is logging on. Defaults per board:
+    /// Pico → /dev/ttyACM0 (USB-CDC), F103 → /dev/ttyUSB0 (FTDI).
+    #[arg(short, long)]
+    port: Option<String>,
 
     /// Which capture board is on the other end. Picks the permutation
     /// from raw (pa, pb) port reads back to logical (data, dc, cs).
@@ -146,7 +158,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let reader_shared = Arc::clone(&shared);
-    let port = args.port.clone();
+    let port = args
+        .port
+        .clone()
+        .unwrap_or_else(|| args.board.default_port().to_string());
     let replay = args.replay.clone();
     let dump_dir = args.dump_dir.clone();
     let raw_dump = args.raw_dump.clone();
