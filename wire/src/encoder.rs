@@ -122,9 +122,7 @@ impl Encoder {
             }
             State::BlockOpen => {}
         }
-        for &b in &sample.to_le_bytes() {
-            sink.push(b);
-        }
+        sink.push_u32(sample);
     }
 
     /// Terminate whatever frame is open and return to `Idle`. For a
@@ -133,9 +131,7 @@ impl Encoder {
         match self.state {
             State::Idle => {}
             State::BlockOpen => {
-                for &b in &BLOCK_SENTINEL.to_le_bytes() {
-                    sink.push(b);
-                }
+                sink.push_u32(BLOCK_SENTINEL);
                 self.state = State::Idle;
             }
         }
@@ -143,12 +139,8 @@ impl Encoder {
 
     fn emit_run<S: Sink>(&mut self, len: u16, sample: u32, sink: &mut S) {
         sink.push(TAG_RUN);
-        for &b in &len.to_le_bytes() {
-            sink.push(b);
-        }
-        for &b in &sample.to_le_bytes() {
-            sink.push(b);
-        }
+        sink.push_u16(len);
+        sink.push_u32(sample);
     }
 }
 
