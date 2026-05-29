@@ -35,15 +35,45 @@ struct RowDef {
 
 static ROWS: &[RowDef] = &[
     // Top large red panel — PM2.5 (μg/m³ unit label below).
-    RowDef { name: "pm25",     x_min:  80, x_max: 230, y_min:  50, y_max: 130 },
+    RowDef {
+        name: "pm25",
+        x_min: 80,
+        x_max: 230,
+        y_min: 50,
+        y_max: 130,
+    },
     // Second large panel — TVOC (2-digit + decimal dot in the middle).
-    RowDef { name: "tvoc",     x_min:  80, x_max: 230, y_min: 195, y_max: 280 },
+    RowDef {
+        name: "tvoc",
+        x_min: 80,
+        x_max: 230,
+        y_min: 195,
+        y_max: 280,
+    },
     // Mid green panel — CO2 (4-digit ppm).
-    RowDef { name: "co2",      x_min:  90, x_max: 245, y_min: 350, y_max: 405 },
+    RowDef {
+        name: "co2",
+        x_min: 90,
+        x_max: 245,
+        y_min: 350,
+        y_max: 405,
+    },
     // Bottom-left — temperature.
-    RowDef { name: "temp",     x_min:   0, x_max: 100, y_min: 425, y_max: 475 },
+    RowDef {
+        name: "temp",
+        x_min: 0,
+        x_max: 100,
+        y_min: 425,
+        y_max: 475,
+    },
     // Bottom-right — humidity.
-    RowDef { name: "humidity", x_min: 200, x_max: 320, y_min: 425, y_max: 475 },
+    RowDef {
+        name: "humidity",
+        x_min: 200,
+        x_max: 320,
+        y_min: 425,
+        y_max: 475,
+    },
 ];
 
 #[derive(Default)]
@@ -136,11 +166,7 @@ impl Decoder {
             if now.duration_since(last) < quiet {
                 continue;
             }
-            let value: String = state
-                .digits
-                .iter()
-                .map(|(_, l)| short_label(l))
-                .collect();
+            let value: String = state.digits.iter().map(|(_, l)| short_label(l)).collect();
             out.push(RowReport {
                 name: def.name,
                 value,
@@ -175,7 +201,7 @@ fn match_glyph(win: &WindowWrite) -> Option<&'static str> {
     // Templates are stored in display orientation (the dumper rotates the
     // raw window 180° before saving), so iterate the live pixels in
     // reverse to put the mask in the same frame of reference.
-    let mut packed = vec![0u8; (n + 7) / 8];
+    let mut packed = vec![0u8; n.div_ceil(8)];
     for (i, &p) in win.pixels.iter().rev().enumerate() {
         if p != bg {
             packed[i / 8] |= 1 << (i % 8);

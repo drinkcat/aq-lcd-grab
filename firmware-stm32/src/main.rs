@@ -5,12 +5,10 @@ mod capture;
 mod uart;
 
 use embassy_executor::Spawner;
-use embassy_futures::join::join3;
-use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::Config;
+use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::Timer;
 use panic_halt as _;
 
 use capture::{Capture, CapturePins, RING_CAP};
@@ -117,7 +115,10 @@ async fn main(_spawner: Spawner) {
     ];
     let mut capture = Capture::new(
         p.TIM2,
-        CapturePins { wr_etr: p.PA0, data: data_pins },
+        CapturePins {
+            wr_etr: p.PA0,
+            data: data_pins,
+        },
         p.DMA1_CH5, // TIM2_CH1 (input capture on TI1) -> PA ring
         p.DMA1_CH7, // TIM2_CH2 (input capture on TI1, alt) -> PB ring
         pa_buf,
@@ -125,41 +126,10 @@ async fn main(_spawner: Spawner) {
     );
 
     let mut encoder = Encoder::default();
-    encoder.log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
-
-    // Disabled: trying to see if cap_fut alone gets higher
-    // throughput without contention from the executor having to wake
-    // these futures on their timers/IRQs.
-    //
-    // // LED task — visual liveness, also signals state.
-    // let led_fut = async {
-    //     loop {
-    //         let interval = if STREAMING.load(core::sync::atomic::Ordering::Relaxed) {
-    //             100
-    //         } else {
-    //             500
-    //         };
-    //         led.toggle();
-    //         Timer::after_millis(interval).await;
-    //     }
-    // };
-    //
-    // // UART RX task — single-byte commands from the host.
-    // let rx_fut = async {
-    //     let mut byte = [0u8; 1];
-    //     loop {
-    //         if <_ as Read>::read(&mut rx, &mut byte).await.is_err() {
-    //             continue;
-    //         }
-    //         let cmd = match byte[0] {
-    //             HOST_CMD_START => HostCmd::Start,
-    //             HOST_CMD_STOP => HostCmd::Stop,
-    //             HOST_CMD_STATS => HostCmd::Stats,
-    //             _ => continue, // unknown command, ignore
-    //         };
-    //         CMD_QUEUE.send(cmd).await;
-    //     }
-    // };
+    encoder.log(
+        "aq-lcd-grab stm32 firmware booted, awaiting START",
+        &mut sink,
+    );
 
     // Boot STOPPED: the host drives START/STOP over the control path
     // (polled from RXNE in the cap loop below).
@@ -248,9 +218,7 @@ async fn main(_spawner: Spawner) {
             .await
             {
                 embassy_futures::select::Either::First(n) => n,
-                embassy_futures::select::Either::Second(_) => {
-                    capture.fast_drain(&mut samples)
-                }
+                embassy_futures::select::Either::Second(_) => capture.fast_drain(&mut samples),
             };
 
             // In STOPPED state, nothing to capture. Clear accumulated
@@ -325,8 +293,12 @@ async fn main(_spawner: Spawner) {
             // Sample (and clear) DMA TEIF — accumulate event counts
             // so a 5s heartbeat surfaces them via STATS.
             let (pa_te, pb_te) = capture.take_dma_teif();
-            if pa_te { pa_teif_count = pa_teif_count.saturating_add(1); }
-            if pb_te { pb_teif_count = pb_teif_count.saturating_add(1); }
+            if pa_te {
+                pa_teif_count = pa_teif_count.saturating_add(1);
+            }
+            if pb_te {
+                pb_teif_count = pb_teif_count.saturating_add(1);
+            }
 
             // Kick the TX DMA so the tail of this iteration's output
             // (and any wrap remainder) ships even if no further `push`
@@ -350,9 +322,11 @@ async fn main(_spawner: Spawner) {
 fn fmt_idle3(buf: &mut [u8], cnt: u16, pa_ndtr: u16, pb_ndtr: u16) -> &str {
     let mut pos = 0;
     pos += write_label_u16(&mut buf[pos..], b"cnt=", cnt);
-    buf[pos] = b' '; pos += 1;
+    buf[pos] = b' ';
+    pos += 1;
     pos += write_label_u16(&mut buf[pos..], b"pa_ndtr=", pa_ndtr);
-    buf[pos] = b' '; pos += 1;
+    buf[pos] = b' ';
+    pos += 1;
     pos += write_label_u16(&mut buf[pos..], b"pb_ndtr=", pb_ndtr);
     core::str::from_utf8(&buf[..pos]).unwrap()
 }
@@ -378,9 +352,11 @@ fn fmt_stats(buf: &mut [u8], cap_dropped: u32, pa_teif: u32, pb_teif: u32) -> &s
     buf[..prefix.len()].copy_from_slice(prefix);
     pos += prefix.len();
     pos += write_label_u32(&mut buf[pos..], b"cap_dropped=", cap_dropped);
-    buf[pos] = b' '; pos += 1;
+    buf[pos] = b' ';
+    pos += 1;
     pos += write_label_u32(&mut buf[pos..], b"pa_teif=", pa_teif);
-    buf[pos] = b' '; pos += 1;
+    buf[pos] = b' ';
+    pos += 1;
     pos += write_label_u32(&mut buf[pos..], b"pb_teif=", pb_teif);
     core::str::from_utf8(&buf[..pos]).unwrap()
 }
@@ -397,4 +373,3 @@ fn write_label_u32(buf: &mut [u8], label: &[u8], val: u32) -> usize {
     }
     label.len() + 8
 }
-

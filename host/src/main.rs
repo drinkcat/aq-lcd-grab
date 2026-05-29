@@ -5,8 +5,8 @@ mod permute;
 mod wire;
 
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,9 +14,9 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
+use bus_decoder::{BusDecoder, Frame};
 use clap::{Parser, ValueEnum};
 use eframe::egui;
-use bus_decoder::{BusDecoder, Frame};
 use framebuffer::{Framebuffer, WindowWrite};
 use wire::{Decoder as WireDecoder, Event, HOST_CMD_START, HOST_CMD_STOP};
 
@@ -284,14 +284,14 @@ fn reader_loop(
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
             Err(e) => return Err(e.into()),
         };
-        if read > 0 {
-            if let Some(sink) = raw_sink.as_mut() {
-                sink.write_all(&buf[..read])
-                    .with_context(|| "writing to raw dump file")?;
-                // Flush on the idle path below so the file is at most
-                // one read-timeout window behind real time, even if
-                // the viewer is killed.
-            }
+        if read > 0
+            && let Some(sink) = raw_sink.as_mut()
+        {
+            sink.write_all(&buf[..read])
+                .with_context(|| "writing to raw dump file")?;
+            // Flush on the idle path below so the file is at most
+            // one read-timeout window behind real time, even if
+            // the viewer is killed.
         }
         let events = if read > 0 {
             wire.feed(&buf[..read])?
@@ -304,7 +304,15 @@ fn reader_loop(
 
         let mut g = shared.lock().unwrap();
         for ev in events {
-            dispatch_event(ev, &mut g, &mut bus, &mut glyphs, dump_dir.as_deref(), &mut seen, board);
+            dispatch_event(
+                ev,
+                &mut g,
+                &mut bus,
+                &mut glyphs,
+                dump_dir.as_deref(),
+                &mut seen,
+                board,
+            );
         }
         if read == 0 {
             // Idle pump: settle any glyph rows that have stopped updating.
@@ -338,7 +346,12 @@ fn dispatch_event(
                 // (helpful when the encoder fragments runs because of
                 // control-bit flicker even though data is constant).
                 let (data, is_data) = board.permute(*s);
-                print!(" {:08x}({}:{:04x})", s, if is_data { 'D' } else { 'C' }, data);
+                print!(
+                    " {:08x}({}:{:04x})",
+                    s,
+                    if is_data { 'D' } else { 'C' },
+                    data
+                );
             }
             println!();
             for s in samples {
@@ -361,7 +374,11 @@ fn dispatch_event(
                 handle_frame(g, glyphs, dump_dir, seen, tx);
             }
         }
-        Event::Repeat2 { val_a, val_b, run_lens } => {
+        Event::Repeat2 {
+            val_a,
+            val_b,
+            run_lens,
+        } => {
             let (data_a, is_data_a) = board.permute(val_a);
             let (data_b, is_data_b) = board.permute(val_b);
             let total: usize = run_lens.iter().map(|&l| l as usize).sum();
@@ -388,7 +405,13 @@ fn dispatch_event(
                 }
             }
         }
-        Event::Tick { t_us, dt_us, n_drained, n_pending, bytes_out } => {
+        Event::Tick {
+            t_us,
+            dt_us,
+            n_drained,
+            n_pending,
+            bytes_out,
+        } => {
             println!(
                 "TICK  t={:>10}us dt={:>5}us drained={:>5} pending={:>5} bytes_out={:>10}",
                 t_us, dt_us, n_drained, n_pending, bytes_out,
@@ -450,10 +473,7 @@ fn handle_frame(
 /// (0xFC). Then send START — the first byte from the firmware should
 /// be the STARTED ack (0xFB), and everything after it is fresh frame
 /// data going to the wire decoder.
-fn sync(
-    reader: &mut (dyn Read + Send),
-    writer: &mut (dyn Write + Send),
-) -> anyhow::Result<()> {
+fn sync(reader: &mut (dyn Read + Send), writer: &mut (dyn Write + Send)) -> anyhow::Result<()> {
     // 1. Tell the firmware to stop sending. Then read until quiet —
     //    anything in the OS buffer plus anything the firmware was
     //    mid-emitting plus the STOPPED ack will all flush. "Quiet" =
@@ -480,10 +500,7 @@ fn sync(
 /// read-timeout window). Returns whether `needle` appeared anywhere
 /// in the drained bytes. Logs how much was discarded (and a hex
 /// preview) so a failed sync shows what the firmware actually sent.
-fn drain_until_quiet(
-    reader: &mut (dyn Read + Send),
-    needle: u8,
-) -> anyhow::Result<bool> {
+fn drain_until_quiet(reader: &mut (dyn Read + Send), needle: u8) -> anyhow::Result<bool> {
     let mut saw_needle = false;
     let mut total = 0usize;
     let mut preview: Vec<u8> = Vec::new();
@@ -513,7 +530,6 @@ fn drain_until_quiet(
     );
     result
 }
-
 
 /// Minimum window dimension considered a glyph worth keeping. Filters
 /// out thin status bars and 1-pixel-wide animation slivers.
@@ -557,10 +573,7 @@ fn dump_window(dir: &Path, win: &WindowWrite, seen: &mut HashSet<u64>) {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let name = format!(
-        "{}x{}_{:03}_{:03}_{}.png",
-        win.w, win.h, disp_x, disp_y, ts
-    );
+    let name = format!("{}x{}_{:03}_{:03}_{}.png", win.w, win.h, disp_x, disp_y, ts);
     let path = dir.join(&name);
     match image::RgbaImage::from_raw(win.w as u32, win.h as u32, rgba) {
         Some(img) => {
@@ -631,11 +644,8 @@ impl eframe::App for App {
         match &mut self.texture {
             Some(t) => t.set(image, egui::TextureOptions::NEAREST),
             None => {
-                self.texture = Some(ctx.load_texture(
-                    "framebuffer",
-                    image,
-                    egui::TextureOptions::NEAREST,
-                ));
+                self.texture =
+                    Some(ctx.load_texture("framebuffer", image, egui::TextureOptions::NEAREST));
             }
         }
 
@@ -649,12 +659,7 @@ impl eframe::App for App {
                     ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.weak(*name);
-                            ui.label(
-                                egui::RichText::new(v)
-                                    .strong()
-                                    .size(22.0)
-                                    .monospace(),
-                            );
+                            ui.label(egui::RichText::new(v).strong().size(22.0).monospace());
                         });
                     });
                 }

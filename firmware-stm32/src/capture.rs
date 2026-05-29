@@ -29,13 +29,13 @@
 
 use core::future::poll_fn;
 use core::task::Poll;
+use embassy_stm32::Peri;
 use embassy_stm32::dma::{Priority, ReadableRingBuffer, TransferOptions};
 use embassy_stm32::gpio::{AnyPin, Input, Pull};
 use embassy_stm32::pac;
 use embassy_stm32::peripherals::{PA0, TIM2};
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::timer::{Ch1, Ch2, Dma as TimDma};
-use embassy_stm32::Peri;
 
 /// Mask of PA bits that are wired to the display flex. Bits outside
 /// this mask are noise (floating inputs, other peripherals) and must
@@ -132,7 +132,8 @@ impl<'d> Capture<'d> {
     ) -> Self {
         assert_eq!(pa_buf.len(), pb_buf.len(), "ring buffers must match");
         assert_eq!(
-            pa_buf.len(), RING_CAP,
+            pa_buf.len(),
+            RING_CAP,
             "ring length must equal RING_CAP — fast_drain hardcodes the modulus mask"
         );
 
@@ -160,11 +161,6 @@ impl<'d> Capture<'d> {
         let pa_buf_ptr = pa_buf.as_ptr();
         let pb_buf_ptr = pb_buf.as_ptr();
 
-        // Grab the DMA request IDs *before* constructing the rings —
-        // the Peri move into ReadableRingBuffer consumes the handle.
-        let pa_req = pa_dma.request();
-        let pb_req = pb_dma.request();
-
         // Both channels: peripheral→memory, half-word, circular.
         // `ReadableRingBuffer::new` sets circular=true internally.
         //
@@ -178,12 +174,8 @@ impl<'d> Capture<'d> {
         pb_opts.priority = Priority::VeryHigh;
         let mut pa_opts = TransferOptions::default();
         pa_opts.priority = Priority::High;
-        let pa_ring = unsafe {
-            ReadableRingBuffer::new(pa_dma, pa_req, gpioa_idr, pa_buf, pa_opts)
-        };
-        let pb_ring = unsafe {
-            ReadableRingBuffer::new(pb_dma, pb_req, gpiob_idr, pb_buf, pb_opts)
-        };
+        let pa_ring = unsafe { ReadableRingBuffer::new(pa_dma, (), gpioa_idr, pa_buf, pa_opts) };
+        let pb_ring = unsafe { ReadableRingBuffer::new(pb_dma, (), gpiob_idr, pb_buf, pb_opts) };
 
         // TIM2 setup. Use the low-level Timer wrapper to handle RCC
         // gating; do the slave-mode + DMA-enable register writes by hand
@@ -250,8 +242,10 @@ impl<'d> Capture<'d> {
         });
         r.ccer().modify(|w| {
             // Falling edge for both, matching ETR (see SMCR.ETP comment).
-            w.set_ccp(0, true); w.set_cce(0, true);  // CC1 falling, enable
-            w.set_ccp(1, true); w.set_cce(1, true);  // CC2 falling, enable
+            w.set_ccp(0, true);
+            w.set_cce(0, true); // CC1 falling, enable
+            w.set_ccp(1, true);
+            w.set_cce(1, true); // CC2 falling, enable
         });
 
         // Enable both CC DMA request lines.
@@ -310,6 +304,7 @@ impl<'d> Capture<'d> {
     /// rings are kept in step by reading the min of their available
     /// counts per call — a slow drainer that's about to lose data in
     /// one channel will lose it symmetrically in both.
+    #[allow(dead_code)] // embassy-ring drain path, kept as an alternative to fast_drain
     pub fn drain(&mut self, out_pa: &mut [u16], out_pb: &mut [u16]) -> usize {
         debug_assert_eq!(out_pa.len(), out_pb.len());
 
@@ -389,8 +384,7 @@ impl<'d> Capture<'d> {
         }
 
         let n = pa_avail.min(pb_avail).min(out.len());
-        const SAMPLE_MASK: u32 =
-            PA_MASK as u32 | ((PB_MASK as u32) << 16);
+        const SAMPLE_MASK: u32 = PA_MASK as u32 | ((PB_MASK as u32) << 16);
 
         let pa_base = self.pa_buf_ptr;
         let pb_base = self.pb_buf_ptr;
@@ -456,11 +450,7 @@ impl<'d> Capture<'d> {
             // half-/full-transfer IRQ implies PB has data too.
             self.pa_ring.set_waker(cx.waker());
             let n = self.fast_drain(out);
-            if n > 0 {
-                Poll::Ready(n)
-            } else {
-                Poll::Pending
-            }
+            if n > 0 { Poll::Ready(n) } else { Poll::Pending }
         })
         .await
     }
@@ -481,33 +471,13 @@ impl<'d> Capture<'d> {
         self._tim.regs_gp16().cnt().read().cnt()
     }
 
-    /// DEBUG: read SMCR (slave-mode control) and CR1 (control 1) raw.
-    /// SMCR should have ECE=1 (bit 14). CR1 should have CEN=1 (bit 0).
-    pub fn peek_smcr_cr1(&self) -> (u32, u32) {
-        let smcr = self._tim.regs_gp16().smcr().read().0;
-        let cr1 = self._tim.regs_gp16().cr1().read().0;
-        (smcr, cr1)
-    }
-
-    /// DEBUG: read DIER (DMA enable). Should have UDE bit 8 set and
-    /// CC1DE bit 9 set, both = 1.
-    pub fn peek_dier(&self) -> u32 {
-        self._tim.regs_gp16().dier().read().0
-    }
-
-    /// DEBUG: read AFIO->MAPR. TIM2_REMAP is bits 9:8, should be 00
-    /// for our ETR=PA0 routing. Anything else means ETR is not on PA0.
-    pub fn peek_afio_mapr(&self) -> u32 {
-        pac::AFIO.mapr().read().0
-    }
-
     /// DEBUG: NDTR (remaining transfers) for the PA-ring DMA channel
     /// (TIM2_CH1 → DMA1_CH5) and PB-ring DMA channel (TIM2_CH2 →
     /// DMA1_CH7). If these decrement over time, DMA is firing.
     pub fn peek_dma_ndtr(&self) -> (u16, u16) {
         // BDMA channels are 1-indexed in hardware; ch(n) is 0-indexed.
-        let pa_ndtr = pac::DMA1.ch(4).ndtr().read().ndt();  // CH5
-        let pb_ndtr = pac::DMA1.ch(6).ndtr().read().ndt();  // CH7
+        let pa_ndtr = pac::DMA1.ch(4).ndtr().read().ndt(); // CH5
+        let pb_ndtr = pac::DMA1.ch(6).ndtr().read().ndt(); // CH7
         (pa_ndtr, pb_ndtr)
     }
 
@@ -525,8 +495,12 @@ impl<'d> Capture<'d> {
         // clears the corresponding TEIF in ISR.
         if pa || pb {
             pac::DMA1.ifcr().write(|w| {
-                if pa { w.set_teif(4, true); }
-                if pb { w.set_teif(6, true); }
+                if pa {
+                    w.set_teif(4, true);
+                }
+                if pb {
+                    w.set_teif(6, true);
+                }
             });
         }
         (pa, pb)

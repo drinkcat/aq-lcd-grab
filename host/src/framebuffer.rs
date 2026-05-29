@@ -83,8 +83,8 @@ impl Framebuffer {
                 }
                 for &px in &tx.data {
                     if self.cursor_col < WIDTH && self.cursor_row < HEIGHT {
-                        let idx = self.cursor_row as usize * WIDTH as usize
-                            + self.cursor_col as usize;
+                        let idx =
+                            self.cursor_row as usize * WIDTH as usize + self.cursor_col as usize;
                         self.pixels[idx] = px;
                     }
                     self.cursor_col += 1;

@@ -82,7 +82,7 @@ fn pack_png(path: &Path, expected_w: u16, expected_h: u16) -> Vec<u8> {
         path.display()
     );
     let n = w as usize * h as usize;
-    let mut out = vec![0u8; (n + 7) / 8];
+    let mut out = vec![0u8; n.div_ceil(8)];
     for (i, px) in img.pixels().enumerate() {
         if px.0[0] != 0 {
             out[i / 8] |= 1 << (i % 8);

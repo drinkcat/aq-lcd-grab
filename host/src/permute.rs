@@ -50,7 +50,7 @@ pub fn permute_f103(sample: u32) -> (u16, bool) {
         | (((pb >> 14) & 0x0001) << 10)          // DB10       ← PB14
         | (((pa >> 2) & 0x0007) << 11)           // DB11..DB13 ← PA2..PA4
         | ((pb & 0x0001) << 14)                  // DB14       ← PB0
-        | (((pb >> 1) & 0x0001) << 15);          // DB15       ← PB1
-    let is_data = pb & (1 << 15) != 0;           // DC         ← PB15
+        | (((pb >> 1) & 0x0001) << 15); // DB15       ← PB1
+    let is_data = pb & (1 << 15) != 0; // DC         ← PB15
     (data, is_data)
 }

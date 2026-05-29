@@ -228,7 +228,10 @@ async fn main(_spawner: Spawner) {
 
     let mut encoder = Encoder::default();
     let mut sink = PipeSink::new();
-    encoder.log("aq-lcd-grab pico firmware booted, awaiting START", &mut sink);
+    encoder.log(
+        "aq-lcd-grab pico firmware booted, awaiting START",
+        &mut sink,
+    );
 
     let usb_fut = usb.run();
 
@@ -245,7 +248,7 @@ async fn main(_spawner: Spawner) {
     // shipping. The wait is bounded so interactive acks / log lines
     // still flush within a few ms.
     let tx_fut = async {
-        use embassy_futures::select::{select, Either};
+        use embassy_futures::select::{Either, select};
         sender.wait_connection().await;
         let mut buf = [0u8; 64];
         loop {
@@ -267,10 +270,8 @@ async fn main(_spawner: Spawner) {
                 sender.wait_connection().await;
                 continue;
             }
-            if full_packet && TX_PIPE.is_empty() {
-                if sender.write_packet(&[]).await.is_err() {
-                    sender.wait_connection().await;
-                }
+            if full_packet && TX_PIPE.is_empty() && sender.write_packet(&[]).await.is_err() {
+                sender.wait_connection().await;
             }
         }
     };
@@ -411,10 +412,8 @@ async fn main(_spawner: Spawner) {
                     // dt_us, so no signal is lost.
                     if n_drained > 0 || n_pending > 0 || bytes_delta > 0 {
                         let t_us = tick_t0.as_micros() as u32;
-                        let dt_us = now
-                            .duration_since(tick_t0)
-                            .as_micros()
-                            .min(u16::MAX as u64) as u16;
+                        let dt_us =
+                            now.duration_since(tick_t0).as_micros().min(u16::MAX as u64) as u16;
                         encoder.tick(t_us, dt_us, n_drained, n_pending, bytes_delta, &mut sink);
                     }
                     last_tick = now;

@@ -161,11 +161,20 @@ impl Encoder {
         // Extend an open REPEAT2 if this run matches the alternation and
         // fits a u8 length byte (len 1..=255 — a lone sample participates
         // like any other run).
-        if let State::Repeat2Open { val_a, val_b, next_is_b } = self.state {
+        if let State::Repeat2Open {
+            val_a,
+            val_b,
+            next_is_b,
+        } = self.state
+        {
             let expect = if next_is_b { val_b } else { val_a };
             if incoming.sample == expect && incoming.len <= MAX_REPEAT2_LEN {
                 sink.push(incoming.len as u8);
-                self.state = State::Repeat2Open { val_a, val_b, next_is_b: !next_is_b };
+                self.state = State::Repeat2Open {
+                    val_a,
+                    val_b,
+                    next_is_b: !next_is_b,
+                };
                 return;
             }
             // Pattern broken (third value or overlong): close the frame
@@ -459,7 +468,10 @@ mod tests {
     fn three_runs_confirm_and_open_repeat2() {
         // A×2 B×3 A×2 — the third run (A) confirms the alternation and
         // opens the frame with lens [2,3,2].
-        assert_eq!(encode(&[7, 7, 9, 9, 9, 7, 7]), repeat2_frame(7, 9, &[2, 3, 2]));
+        assert_eq!(
+            encode(&[7, 7, 9, 9, 9, 7, 7]),
+            repeat2_frame(7, 9, &[2, 3, 2])
+        );
     }
 
     #[test]
@@ -523,14 +535,11 @@ mod tests {
         // the 200-run flushes as a plain RUN, the long run splits.
         let n = 300usize;
         let mut s = vec![7u32; 200];
-        s.extend(std::iter::repeat(9).take(n));
+        s.extend(std::iter::repeat_n(9, n));
         // 7×200 deferred; 9×300 completes but >255 so can't partner:
         // drain deferred (RUN 200,7), then 9-run emitted as plain RUN(s).
         // 9×300 was split at MAX_RUN? No — 300 < MAX_RUN, so one RUN(300,9).
-        assert_eq!(
-            encode(&s),
-            frames(&[run_frame(200, 7), run_frame(300, 9)]),
-        );
+        assert_eq!(encode(&s), frames(&[run_frame(200, 7), run_frame(300, 9)]),);
     }
 
     #[test]
@@ -539,7 +548,7 @@ mod tests {
         // u8 length byte, so it can't confirm a REPEAT2. The deferred A,B
         // drain as plain RUNs and the long run follows as its own RUN.
         let mut s = vec![1u32, 1, 2, 2];
-        s.extend(std::iter::repeat(1).take(256));
+        s.extend(std::iter::repeat_n(1, 256));
         assert_eq!(
             encode(&s),
             frames(&[run_frame(2, 1), run_frame(2, 2), run_frame(256, 1)]),
@@ -623,10 +632,7 @@ mod tests {
 
     #[test]
     fn log_frames_text_nul_terminated() {
-        assert_eq!(
-            signal(|e, s| e.log("hi", s)),
-            vec![TAG_LOG, b'h', b'i', 0],
-        );
+        assert_eq!(signal(|e, s| e.log("hi", s)), vec![TAG_LOG, b'h', b'i', 0],);
     }
 
     #[test]

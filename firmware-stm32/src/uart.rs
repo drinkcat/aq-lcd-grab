@@ -11,11 +11,11 @@
 //! interrupt RX would need DMA1_CH5, which the capture front-end owns,
 //! and commands are rare + latency-tolerant.
 
+use embassy_stm32::Peri;
 use embassy_stm32::mode::Blocking;
 use embassy_stm32::pac;
 use embassy_stm32::peripherals::{PA9, PA10, USART1};
 use embassy_stm32::usart::{Config as UsartConfig, Uart, UartRx, UartTx};
-use embassy_stm32::Peri;
 
 use wire::Sink;
 
@@ -154,11 +154,16 @@ impl UartSink {
         }
         // Contiguous span from head up to either tail or the buffer end
         // (a wrap is sent as a second transfer on the next kick).
-        let end = if self.tail > self.head { self.tail } else { TX_RING };
+        let end = if self.tail > self.head {
+            self.tail
+        } else {
+            TX_RING
+        };
         let len = end - self.head;
 
         let ch = tx_dma_ch();
-        ch.mar().write_value(self.buf.as_ptr() as u32 + self.head as u32);
+        ch.mar()
+            .write_value(self.buf.as_ptr() as u32 + self.head as u32);
         ch.ndtr().write(|w| w.set_ndt(len as u16));
         ch.cr().modify(|w| w.set_en(true));
         self.inflight = len;

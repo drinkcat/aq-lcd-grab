@@ -107,7 +107,6 @@ impl Decoder {
         }
         Ok(events)
     }
-
 }
 
 /// Try to parse one frame from `buf`. Returns `Ok(Some((ev, n)))` with
@@ -152,7 +151,16 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             let n_drained = u16::from_le_bytes([buf[7], buf[8]]);
             let n_pending = u16::from_le_bytes([buf[9], buf[10]]);
             let bytes_out = u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]]);
-            Ok(Some((Event::Tick { t_us, dt_us, n_drained, n_pending, bytes_out }, 15)))
+            Ok(Some((
+                Event::Tick {
+                    t_us,
+                    dt_us,
+                    n_drained,
+                    n_pending,
+                    bytes_out,
+                },
+                15,
+            )))
         }
         TAG_REPEAT2 => {
             // Header: tag + val_a:u32 + val_b:u32 = 9 bytes.
@@ -169,7 +177,14 @@ fn parse_one(buf: &[u8]) -> io::Result<Option<(Event, usize)>> {
             };
             let run_lens = buf[body_start..body_start + zero_off].to_vec();
             let consumed = body_start + zero_off + 1;
-            Ok(Some((Event::Repeat2 { val_a, val_b, run_lens }, consumed)))
+            Ok(Some((
+                Event::Repeat2 {
+                    val_a,
+                    val_b,
+                    run_lens,
+                },
+                consumed,
+            )))
         }
         TAG_OVERRUN => {
             if buf.len() < 5 {
