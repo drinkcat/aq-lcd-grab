@@ -206,6 +206,46 @@ def build_fanout(col_x, via_y, sign, obstacle_rows, obstacles, half_w):
     return pts
 
 
+def dodge_mid_obstacles(pts, col_x, half_w, obstacles):
+    """Insert per-obstacle doglegs into an existing near-vertical polyline for
+    any obstacle that lies within a segment's y range and is too close to
+    col_x. Returns a new point list."""
+    result = []
+    for i, (x1, y1) in enumerate(pts[:-1]):
+        x2, y2 = pts[i + 1]
+        if y1 >= y2:
+            result.append((x1, y1))
+            continue
+        seg_candidates = []
+        for ox, oy, orad in obstacles:
+            if oy <= y1 + 0.5 or oy >= y2 - 0.5:
+                continue
+            needed = orad + CLEARANCE + half_w + DETOUR_PAD
+            dx_obs = ox - col_x
+            if abs(dx_obs) >= needed:
+                continue
+            seg_candidates.append((oy, dx_obs, orad, needed))
+        seg_candidates.sort()
+        result.append((x1, y1))
+        for oy, dx_obs, orad, needed in seg_candidates:
+            offset_mag = needed - abs(dx_obs)
+            target_offset = -math.copysign(offset_mag, dx_obs)
+            jog_arrival_y = oy - (offset_mag + JOG_LEAD_IN)
+            jog_start_y = jog_arrival_y - offset_mag
+            hold_end_y = oy + (offset_mag + JOG_LEAD_IN)
+            return_y = hold_end_y + offset_mag
+            result.append((col_x, jog_start_y))
+            result.append((col_x + target_offset, jog_arrival_y))
+            result.append((col_x + target_offset, hold_end_y))
+            result.append((col_x, return_y))
+    result.append(pts[-1])
+    deduped = [result[0]]
+    for p in result[1:]:
+        if math.hypot(p[0] - deduped[-1][0], p[1] - deduped[-1][1]) > 1e-6:
+            deduped.append(p)
+    return deduped
+
+
 def route_with_plan(ax, ay, bx, by, track_width, obstacles):
     """Polyline from A to B with 45° jogs around each shallow-band obstacle.
     Deep-band nets get jogs computed from their column's position relative
@@ -243,6 +283,10 @@ def route_with_plan(ax, ay, bx, by, track_width, obstacles):
     bot_pts.reverse()
 
     pts = top_pts + bot_pts
+
+    # The middle stretch between the two fanouts may pass near escape vias.
+    # Inject doglegs for any such obstacle that the fanout logic didn't handle.
+    pts = dodge_mid_obstacles(pts, col_x, half_w, obstacles)
 
     deduped = [pts[0]]
     for p in pts[1:]:
@@ -358,14 +402,16 @@ def make_via(x, y, net, size=0.5, drill=0.25,
 # signal up on F.Cu or B.Cu. Order is "DB1 furthest down (largest y), then
 # DB3, DB5, ... stepping upward" — adjacent vias staggered in y so
 # horizontal traces can fan between them without crowding.
-ESCAPE_Y_START = 57.0    # mm, DB1's via y
+ESCAPE_Y_START = 57.6    # mm, DB1's via y; bumped from 57.0 so the
+                         # topmost odd-DB via (DB15 at ~51.6) stays below
+                         # the first-row cluster (DC/DB10/DB9/DB7 at 49.2–51.0)
 ESCAPE_Y_STEP = 0.6      # mm, decrement per net within a row
 ESCAPE_Y_ROW_GAP = 2.4   # mm, vertical gap between the two staggered rows
                          # — sized so row 2's topmost via (DB3) sits clearly
                          # below row 1's bottommost via (DB15), leaving a
                          # horizontal lane for In1.Cu escape routes
-ODD_DB_ESCAPE_ORDER = ("DB1", "DB3", "DB5", "DB7",
-                       "DB9", "DB11", "DB13", "DB15")
+# DB7 and DB9 are placed in the first-row cluster (EXTRA_ESCAPE_VIAS) instead.
+ODD_DB_ESCAPE_ORDER = ("DB1", "DB3", "DB5", "DB11", "DB13", "DB15")
 
 
 def odd_db_escape_y(net):
@@ -380,11 +426,19 @@ def odd_db_escape_y(net):
     return y
 
 
-# Additional escape vias for non-DB nets. Each entry is (net_name, y);
-# y can be a number or a callable() -> float so it can track the layout.
+# Additional escape vias. Each entry is (net_name, y). x is derived from
+# the net's flex-column position. Edit y values here to reposition.
+# Nets are processed in order; left-to-right scan order is guaranteed when
+# each net's x increases and each y is >= the previous entry's y.
 EXTRA_ESCAPE_VIAS = (
-    # DC sits one ESCAPE_Y_STEP above DB15 (the topmost staggered via).
-    ("DC", lambda: odd_db_escape_y("DB15") - ESCAPE_Y_STEP),
+    ("DC",   47.0),
+    ("DB10", 47.0),
+    ("DB9",  48.0),
+    ("DB7",  49.0),
+    ("DB6",  50.0),
+    ("DB5",  51.0),
+    ("DB15",  51.0),
+    ("DB14",  52.0),
 )
 
 
@@ -459,6 +513,10 @@ def main():
     for net, cx, cy, r in planned_escapes:
         all_vias.append((cx, cy, r, net))
 
+    # Build a lookup so the routing loop can splice escape via waypoints
+    # into the In2.Cu polyline, making the connection explicit in KiCad.
+    escape_via_pos = {net: (cx, cy) for net, cx, cy, r in planned_escapes}
+
     for net in FLEX_NETS:
         # Filter to the actual flex pass-through vias (top + bottom); ignore
         # any escape vias or other extras that may have been added.
@@ -509,6 +567,20 @@ def main():
 
         polyline = route_around_vias(ax, ay, bx, by, width, obstacles,
                                      layer=inner_layer)
+
+        # For nets with an escape via on this layer, splice the via position
+        # into the polyline so KiCad shows an explicit connection point.
+        if inner_layer == "In2.Cu" and net in escape_via_pos:
+            ex, ey = escape_via_pos[net]
+            spliced = []
+            for i, (x1, y1) in enumerate(polyline[:-1]):
+                x2, y2 = polyline[i + 1]
+                spliced.append((x1, y1))
+                # Insert escape via point if ey lies between y1 and y2.
+                if min(y1, y2) < ey < max(y1, y2):
+                    spliced.append((ex, ey))
+            spliced.append(polyline[-1])
+            polyline = spliced
 
         # Mark inner segments for deletion.
         for s in inner:
@@ -586,7 +658,7 @@ def main():
         existing = vias_by_net.get(net, [])
         flex_pair = [v for v in existing
                      if any(abs(float(v["fields"]["at"][1]) - b) < 0.05
-                            for b in (33.24, 36.04, 65.89, 68.69))]
+                            for b in FLEX_BAND_YS)]
         old_escapes = [v for v in existing if v not in flex_pair]
         if len(flex_pair) != 2:
             print(f"  ESCAPE {net}: expected 2 flex vias, got "
@@ -611,7 +683,10 @@ def main():
 
     # Each insert anchor points into a soon-to-be-deleted range; translate
     # to the start of the enclosing delete so the new segments fill the gap.
-    delete_ranges = sorted(deletes)
+    # Deduplicate deletes first — a net in both ODD_DB_ESCAPE_ORDER and
+    # EXTRA_ESCAPE_VIAS would otherwise queue the same range twice.
+    deletes = sorted(set(deletes))
+    delete_ranges = deletes
     translated = []
     for off, txt in inserts:
         anchor = off
