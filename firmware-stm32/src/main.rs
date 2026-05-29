@@ -2,11 +2,11 @@
 #![no_main]
 
 mod capture;
+mod uart;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join3;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::usart::{Config as UsartConfig, Uart};
 use embassy_stm32::Config;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
@@ -14,7 +14,8 @@ use embassy_time::Timer;
 use panic_halt as _;
 
 use capture::{Capture, CapturePins, RING_CAP};
-use wire::{Encoder, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP, Sink};
+use uart::UartSink;
+use wire::{Encoder, HOST_CMD_START, HOST_CMD_STATS, HOST_CMD_STOP};
 
 /// Commands from RX task to capture task. The protocol mandates an ack
 /// for every START/STOP — even when it's a no-op for the current
@@ -39,122 +40,6 @@ enum HostCmd {
     Start,
     Stop,
     Stats,
-}
-
-/// TX ring size. Power of two for cheap wrap masking.
-const TX_RING: usize = 2048;
-const TX_RING_MASK: usize = TX_RING - 1;
-
-/// USART1_TX DMA: DMA1 Channel 4. The metapac `ch()` index is 0-based,
-/// so CH4 is `ch(3)` (matches capture.rs using `ch(4)` for CH5).
-fn tx_dma_ch() -> embassy_stm32::pac::bdma::Ch {
-    embassy_stm32::pac::DMA1.ch(3)
-}
-
-/// `Sink` backed by a software circular buffer that a re-armed,
-/// non-circular DMA transfer drains to USART1->DR.
-///
-/// `push` writes one byte at `tail` (wrapping). If the ring is full it
-/// spins until the in-flight DMA has drained a slot — the DMA advances
-/// in hardware, independently of the executor, so the spin always makes
-/// progress and never deadlocks. After writing, if the DMA channel is
-/// idle (previous transfer finished, EN cleared by hardware at NDTR=0),
-/// it arms a fresh transfer over the contiguous pending span. The DMA
-/// stops itself at the span's end, so the wire goes silent when there's
-/// nothing to send — no stale bytes (the bug a free-running circular
-/// DMA caused).
-struct UartSink {
-    buf: &'static mut [u8; TX_RING],
-    /// Start of the unsent region = start of the in-flight transfer (or
-    /// of the next one to arm). Advanced past a transfer once it ends.
-    head: usize,
-    /// Next free slot for `push`.
-    tail: usize,
-    /// Length of the in-flight transfer; 0 when the channel is idle.
-    inflight: usize,
-}
-
-impl UartSink {
-    fn new(buf: &'static mut [u8; TX_RING]) -> Self {
-        Self { buf, head: 0, tail: 0, inflight: 0 }
-    }
-
-    /// DMA channel index (0-based) for the ISR/IFCR flag bits. CH4.
-    const DMA_IDX: usize = 3;
-
-    /// True while a transfer is in flight and not yet complete. On F1
-    /// the EN bit does **not** auto-clear at transfer-complete, so we
-    /// can't use it as the idle signal — we track our own `inflight`
-    /// and the hardware TC flag instead.
-    fn inflight_busy(&self) -> bool {
-        use embassy_stm32::pac;
-        self.inflight > 0 && !pac::DMA1.isr().read().tcif(Self::DMA_IDX)
-    }
-
-    /// If the channel is idle, finalise the just-finished transfer (if
-    /// any) and arm the next contiguous span of pending bytes.
-    fn kick_dma(&mut self) {
-        use embassy_stm32::pac;
-        if self.inflight_busy() {
-            return; // transfer still running
-        }
-
-        // A transfer finished (or none was running). Disable the channel
-        // (EN doesn't auto-clear on F1), clear its TC flag, and advance
-        // head past the bytes that just drained.
-        if self.inflight > 0 {
-            tx_dma_ch().cr().modify(|w| w.set_en(false));
-            pac::DMA1.ifcr().write(|w| w.set_tcif(Self::DMA_IDX, true));
-            self.head = (self.head + self.inflight) & TX_RING_MASK;
-            self.inflight = 0;
-        }
-
-        if self.head == self.tail {
-            return; // nothing pending — leave the channel idle (silent)
-        }
-        // Contiguous span from head up to either tail or the buffer end
-        // (a wrap is sent as a second transfer on the next kick).
-        let end = if self.tail > self.head { self.tail } else { TX_RING };
-        let len = end - self.head;
-
-        let ch = tx_dma_ch();
-        ch.mar().write_value(self.buf.as_ptr() as u32 + self.head as u32);
-        ch.ndtr().write(|w| w.set_ndt(len as u16));
-        ch.cr().modify(|w| w.set_en(true));
-        self.inflight = len;
-    }
-
-    /// Free slots in the ring, accounting for how far the in-flight DMA
-    /// has drained (read live from NDTR).
-    fn free(&self) -> usize {
-        // Bytes of the in-flight transfer still pending in the ring.
-        let remaining = if self.inflight > 0 {
-            tx_dma_ch().ndtr().read().ndt() as usize
-        } else {
-            0
-        };
-        // Live head = committed head advanced by what the DMA drained.
-        let live_head = (self.head + (self.inflight - remaining)) & TX_RING_MASK;
-        // One slot is always kept free to disambiguate full vs empty.
-        (live_head + TX_RING - self.tail - 1) & TX_RING_MASK
-    }
-}
-
-impl Sink for UartSink {
-    fn push(&mut self, b: u8) -> bool {
-        // Spin until a slot frees up. The in-flight DMA drains the ring
-        // in hardware while we wait, so this always makes progress.
-        while self.free() == 0 {
-            // Re-arm if the transfer finished while we spun (so the next
-            // span starts draining and frees more slots).
-            self.kick_dma();
-        }
-        self.buf[self.tail] = b;
-        self.tail = (self.tail + 1) & TX_RING_MASK;
-        self.kick_dma();
-        true
-    }
-    // `flush` is a no-op: the DMA drains the ring on its own.
 }
 
 /// Capture ring lengths. 4096 half-words = 8 KiB per ring = 16 KiB
@@ -194,58 +79,9 @@ async fn main(_spawner: Spawner) {
     // PC13 LED — slow blink in STOPPED, fast in STREAMING.
     let mut led = Output::new(p.PC13, Level::High, Speed::Low);
 
-    // USART1 @ 921600. The encoder pushes bytes into a software ring
-    // (UartSink) which a re-armed, non-circular DMA on DMA1_CH4
-    // (USART1_TX) drains to USART1->DR. Each transfer ships exactly the
-    // pending bytes and then stops, so the wire goes silent when idle —
-    // a free-running circular DMA would retransmit stale bytes. This
-    // keeps the per-byte TXE ISR off the capture hot path. CH4 is free:
-    // capture owns CH5 (TIM2_CH1) and CH7 (TIM2_CH2).
-    //
-    // RX (host START/STOP) is not wired here: USART1_RX's DMA is CH5,
-    // which capture needs, so RX must stay interrupt-driven and is
-    // currently disabled along with the rx_fut PERF-test scaffold below.
-    //
-    // `UartTx::new_blocking` configures USART1 (baud, PA9 AF, UE+TE); we
-    // drive the DMA channel by hand rather than via its blocking write.
-    // `Uart::new_blocking` configures USART1 (baud, UE+TE+RE, PA9/PA10
-    // pin AFs) and splits into TX + RX halves. We keep `_tx` only for
-    // its USART config (TX is driven by the DMA below, not its blocking
-    // write); `rx` is polled non-blocking in the cap loop for the rare
-    // single-byte host commands (interrupt RX would need DMA1_CH5, which
-    // capture owns).
-    let mut usart_cfg = UsartConfig::default();
-    usart_cfg.baudrate = 921600;
-    let usart = Uart::new_blocking(p.USART1, p.PA10, p.PA9, usart_cfg).unwrap();
-    let (_tx, rx) = usart.split();
-    // `rx` must stay alive: dropping a UartRx disconnects the pin and
-    // decrements the USART's refcount (disabling it). We read received
-    // bytes via the PAC (RXNE/DR) in the cap loop rather than through
-    // `rx`'s API, so it's otherwise unused.
-    let _rx = rx;
-
-    // One-time DMA channel + USART setup. `p.DMA1_CH4` is consumed to
-    // mark the channel owned; we then drive its registers directly.
-    let _tx_dma = p.DMA1_CH4;
-    {
-        use embassy_stm32::pac;
-        // USART requests a DMA transfer on TXE.
-        pac::USART1.cr3().modify(|w| w.set_dmat(true));
-        let ch = tx_dma_ch();
-        // Peripheral = USART1 data register (fixed); memory addr + count
-        // are set per transfer in UartSink::kick_dma.
-        ch.par().write_value(pac::USART1.dr().as_ptr() as u32);
-        ch.cr().write(|w| {
-            w.set_dir(pac::bdma::vals::Dir::FROM_MEMORY); // mem -> peripheral
-            w.set_minc(true);   // walk the ring buffer
-            w.set_pinc(false);  // fixed DR
-            w.set_circ(false);  // one-shot: stop at NDTR=0
-            w.set_pl(pac::bdma::vals::Pl::LOW); // never preempt capture
-            // 8-bit on both ends (defaults to byte; set explicitly).
-            w.set_msize(pac::bdma::vals::Size::BITS8);
-            w.set_psize(pac::bdma::vals::Size::BITS8);
-        });
-    }
+    // USART1 TX/RX transport (see uart.rs): DMA-driven TX sink + polled
+    // RX for host commands.
+    let mut sink = UartSink::new(p.USART1, p.PA9, p.PA10, p.DMA1_CH4);
 
     // Capture front-end — TIM1 ETR + 2 DMA rings.
     let (pa_buf, pb_buf) = unsafe {
@@ -288,12 +124,7 @@ async fn main(_spawner: Spawner) {
         pb_buf,
     );
 
-    // TX DMA ring storage. The DMA reads directly out of this buffer.
-    static mut TX_RING_BUF: [u8; TX_RING] = [0; TX_RING];
-    let tx_ring_buf = unsafe { &mut *core::ptr::addr_of_mut!(TX_RING_BUF) };
-
     let mut encoder = Encoder::default();
-    let mut sink = UartSink::new(tx_ring_buf);
     encoder.log("aq-lcd-grab stm32 firmware booted, awaiting START", &mut sink);
 
     // Disabled: trying to see if cap_fut alone gets higher
@@ -353,23 +184,17 @@ async fn main(_spawner: Spawner) {
         let mut pa_teif_count: u32 = 0;
         let mut pb_teif_count: u32 = 0;
         loop {
-            // Poll the USART receiver (RXNE) for host command bytes.
-            // Interrupt RX would need DMA1_CH5 / an ISR; capture owns
-            // CH5 and commands are rare + latency-tolerant, so a poll
-            // per cap-loop iteration is plenty. Reading DR clears RXNE.
-            {
-                use embassy_stm32::pac;
-                while pac::USART1.sr().read().rxne() {
-                    let b = pac::USART1.dr().read().0 as u8;
-                    let cmd = match b {
-                        HOST_CMD_START => Some(HostCmd::Start),
-                        HOST_CMD_STOP => Some(HostCmd::Stop),
-                        HOST_CMD_STATS => Some(HostCmd::Stats),
-                        _ => None, // unknown byte, ignore
-                    };
-                    if let Some(cmd) = cmd {
-                        let _ = CMD_QUEUE.try_send(cmd);
-                    }
+            // Poll for host command bytes (rare, latency-tolerant — see
+            // uart.rs for why RX is polled rather than interrupt-driven).
+            while let Some(b) = sink.poll_rx() {
+                let cmd = match b {
+                    HOST_CMD_START => Some(HostCmd::Start),
+                    HOST_CMD_STOP => Some(HostCmd::Stop),
+                    HOST_CMD_STATS => Some(HostCmd::Stats),
+                    _ => None, // unknown byte, ignore
+                };
+                if let Some(cmd) = cmd {
+                    let _ = CMD_QUEUE.try_send(cmd);
                 }
             }
 
@@ -433,7 +258,7 @@ async fn main(_spawner: Spawner) {
             // drops, kick the TX DMA so any staged acks (STARTED/STOPPED)
             // ship, and sleep a tick so we don't spin.
             if state != StreamState::Streaming {
-                sink.kick_dma();
+                sink.kick();
                 let _ = capture.take_dropped();
                 embassy_time::Timer::after_millis(1).await;
                 continue;
@@ -504,7 +329,7 @@ async fn main(_spawner: Spawner) {
             // (and any wrap remainder) ships even if no further `push`
             // arrives — otherwise a trailing frame would sit unsent on an
             // idle bus until the next byte is produced.
-            sink.kick_dma();
+            sink.kick();
 
             // Yield once per iteration so LED + RX get scheduled.
             // `read_available` only awaits when both rings are empty;
