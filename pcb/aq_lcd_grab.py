@@ -19,7 +19,7 @@ Scope:
 Connectors:
   - J1: main-board side flex   (cable to the PIC32 motherboard)
   - J2: display side flex      (cable to the LCD)
-  - J3: 3-pin connector to main board (3V3, GND, PIC32 reset)
+  - J3: 3-pin connector to main board (3V3, GND, PIC32 reset driven by ESP32+STM32 via 0 Ω jumpers)
   - J5: 3-pin SWD header for STM32 (SWCLK / GND / SWDIO)
 
 The flex connectors face opposite directions on the PCB, so J1[i] lines
@@ -172,13 +172,22 @@ for net_label, ref in GND_TIE_REFS:
 
 # =============================================================================
 # 3-pin power connector to main board
-# (3V3 tap, GND, PIC32 reset)
+# (3V3 tap, GND, PIC32 reset — driven by ESP32 and/or STM32 via 0 Ω jumpers)
 # =============================================================================
 J3 = Part("Connector", "Conn_01x03_Socket",
           footprint="Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
           ref="J3",
           tag="J3_MAINBOARD_POWER")
-PIC32_RESET = Net("PIC32_RESET")   # open-drain from ESP32 (see ESP32 section)
+# PIC32_RESET is the shared net at J3. ESP32 GPIO20 and STM32 PA11 each
+# drive it through a 0 Ω jumper (open-drain; target pull-up on main board).
+# Breaking a jumper isolates that driver without cutting the other path.
+PIC32_RESET = Net("PIC32_RESET")
+PIC32_RST_ESP = Net("PIC32_RST_ESP")   # ESP32 side of jumper
+PIC32_RST_STM = Net("PIC32_RST_STM")   # STM32 side of jumper
+R_PIC_RST_ESP = R("0", "R15", "R_PIC32_RST_ESP")
+R_PIC_RST_ESP[1] += PIC32_RST_ESP; R_PIC_RST_ESP[2] += PIC32_RESET
+R_PIC_RST_STM = R("0", "R16", "R_PIC32_RST_STM")
+R_PIC_RST_STM[1] += PIC32_RST_STM; R_PIC_RST_STM[2] += PIC32_RESET
 J3[1] += P3V3
 J3[2] += GND
 J3[3] += PIC32_RESET
@@ -268,6 +277,10 @@ BOOT1 = Net("BOOT1")
 U1[20] += BOOT1
 R_BOOT1 = R("10k", "R2", "R_BOOT1_PULLDOWN")
 R_BOOT1[1] += BOOT1; R_BOOT1[2] += GND
+
+# PA11 (pin 32): second open-drain driver for PIC32 reset. Wired through
+# 0 Ω jumper R16 onto PIC32_RESET; break R16 to isolate STM32 from the line.
+U1[32] += PIC32_RST_STM    # PA11
 
 # --- SWD header (3-pin) ------------------------------------------------
 # Pinout mirrors the prior board's convention: pin 1 SWCLK, pin 2 GND,
@@ -380,16 +393,13 @@ U1[2] += LED_STATUS
 
 # =============================================================================
 # Bring-up test points on STM32 free pins
-# PB3/PB4 default to JTAG (PB3=JTDO, PB4=NJTRST); firmware must write
-# `AFIO_MAPR.SWJ_CFG=010` early to disable JTAG-DP and free them as
-# plain GPIO (we use SWD only, not JTAG).  PA6 is free with no AF
-# conflicts in our configuration.
+# PA6/PA7/PA8 are free with no AF conflicts in our configuration.
 # Bring-up serial console uses SWO via the SWD probe (Q14), not a
 # dedicated UART pad cluster.
 TEST_POINTS = [
-    (39, "TP1", "TP_PB3"),   # JTDO — needs JTAG disabled
-    (40, "TP2", "TP_PB4"),   # NJTRST — needs JTAG disabled
-    (16, "TP3", "TP_PA6"),   # free GPIO, no AF conflicts
+    (16, "TP1", "TP_PA6"),   # free GPIO, no AF conflicts
+    (17, "TP2", "TP_PA7"),   # free GPIO, no AF conflicts
+    (29, "TP3", "TP_PA8"),   # free GPIO, no AF conflicts
 ]
 for pad_num, ref, tag in TEST_POINTS:
     tp = Part("Connector", "TestPoint",
@@ -440,7 +450,7 @@ U2[8] += UART_ESP_RX    # ESP32 RX <- 0 Ω <- STM32 TX (PA9)
 
 # Reset / boot control
 U2[9]  += NRST          # GPIO19 — open-drain (NRST has internal pull-up)
-U2[10] += PIC32_RESET   # GPIO20 — open-drain; target provides the pull-up
+U2[10] += PIC32_RST_ESP  # GPIO20 — open-drain; target provides the pull-up
 U2[11] += BOOT0         # GPIO18 — push-pull, drive HIGH to enter bootloader
 
 # Bulk decoupling near Xiao 3V3 pad to absorb WiFi TX peaks locally so

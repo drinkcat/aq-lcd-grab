@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/29/2026 04:21 PM")
+    (date "05/29/2026 09:55 PM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -297,7 +297,7 @@
         (field
           (name "SKiDL Tag") "D1_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:370"))
+          (name "SKiDL Line") "aq_lcd_grab.py:383"))
       (libsource
         (lib "Device")
         (part "LED"))
@@ -393,7 +393,7 @@
         (field
           (name "SKiDL Tag") "J4_TARGET_5V_TAP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:195"))
+          (name "SKiDL Line") "aq_lcd_grab.py:204"))
       (libsource
         (lib "Connector")
         (part "Conn_01x02_Socket"))
@@ -417,7 +417,7 @@
         (field
           (name "SKiDL Tag") "J5_SWD_DEBUG")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:280"))
+          (name "SKiDL Line") "aq_lcd_grab.py:293"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Pin"))
@@ -571,6 +571,54 @@
       (component_classes)
       (tstamps "b4f6ba92-62d0-55d0-a15f-8afaba445d86"))
     (comp
+      (ref "R15")
+      (value "0")
+      (description "Resistor")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "Description") "Resistor")
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R_PIC32_RST_ESP")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+      (libsource
+        (lib "Device")
+        (part "R"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "f8645ec0-5860-5aab-bf43-0dee1fce9ea8"))
+    (comp
+      (ref "R16")
+      (value "0")
+      (description "Resistor")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "Description") "Resistor")
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R_PIC32_RST_STM")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+      (libsource
+        (lib "Device")
+        (part "R"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "2a081d8b-0e6a-5b98-a094-16bca50b73d2"))
+    (comp
       (ref "R2")
       (value "10k")
       (description "Resistor")
@@ -631,9 +679,9 @@
         (field
           (name "Datasheet"))
         (field
-          (name "SKiDL Tag") "TP_PB3")
+          (name "SKiDL Tag") "TP_PA6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:395"))
+          (name "SKiDL Line") "aq_lcd_grab.py:405"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -641,7 +689,7 @@
         (names "/")
         (tstamps "/"))
       (component_classes)
-      (tstamps "706dbdb6-2b5b-56c1-8c9a-02fc09c6cb3f"))
+      (tstamps "073e22bf-53f1-56ff-b303-d9641055b092"))
     (comp
       (ref "TP2")
       (value "TestPoint")
@@ -655,9 +703,9 @@
         (field
           (name "Datasheet"))
         (field
-          (name "SKiDL Tag") "TP_PB4")
+          (name "SKiDL Tag") "TP_PA7")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:395"))
+          (name "SKiDL Line") "aq_lcd_grab.py:405"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -665,7 +713,7 @@
         (names "/")
         (tstamps "/"))
       (component_classes)
-      (tstamps "6aa61d7e-b784-5592-855e-371fa0d7a402"))
+      (tstamps "8529d5db-831f-5c6e-ab03-3b8f86994d5d"))
     (comp
       (ref "TP3")
       (value "TestPoint")
@@ -679,9 +727,9 @@
         (field
           (name "Datasheet"))
         (field
-          (name "SKiDL Tag") "TP_PA6")
+          (name "SKiDL Tag") "TP_PA8")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:395"))
+          (name "SKiDL Line") "aq_lcd_grab.py:405"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -689,7 +737,7 @@
         (names "/")
         (tstamps "/"))
       (component_classes)
-      (tstamps "073e22bf-53f1-56ff-b303-d9641055b092"))
+      (tstamps "73e2d744-5e44-5fb7-b9d8-feadfcf04082"))
     (comp
       (ref "U1")
       (value "STM32F103C8Tx")
@@ -705,7 +753,7 @@
         (field
           (name "SKiDL Tag") "U1_STM32")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:212"))
+          (name "SKiDL Line") "aq_lcd_grab.py:221"))
       (libsource
         (lib "MCU_ST_STM32F1")
         (part "STM32F103C8Tx"))
@@ -729,7 +777,7 @@
         (field
           (name "SKiDL Tag") "U2_ESP32C6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:427"))
+          (name "SKiDL Line") "aq_lcd_grab.py:437"))
       (libsource
         (lib "Connector_Generic")
         (part "Conn_01x14"))
@@ -1484,7 +1532,7 @@
       (name "PA6")
       (class "Default")
       (node
-        (ref "TP3")
+        (ref "TP1")
         (pin "1")
         (pintype "PASSIVE"))
       (node
@@ -1493,19 +1541,7 @@
         (pintype "BIDIRECTIONAL")))
     (net
       (code 44)
-      (name "PB3")
-      (class "Default")
-      (node
-        (ref "TP1")
-        (pin "1")
-        (pintype "PASSIVE"))
-      (node
-        (ref "U1")
-        (pin "39")
-        (pintype "BIDIRECTIONAL")))
-    (net
-      (code 45)
-      (name "PB4")
+      (name "PA7")
       (class "Default")
       (node
         (ref "TP2")
@@ -1513,7 +1549,19 @@
         (pintype "PASSIVE"))
       (node
         (ref "U1")
-        (pin "40")
+        (pin "17")
+        (pintype "BIDIRECTIONAL")))
+    (net
+      (code 45)
+      (name "PA8")
+      (class "Default")
+      (node
+        (ref "TP3")
+        (pin "1")
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "29")
         (pintype "BIDIRECTIONAL")))
     (net
       (code 46)
@@ -1524,11 +1572,39 @@
         (pin "3")
         (pintype "PASSIVE"))
       (node
+        (ref "R15")
+        (pin "2")
+        (pintype "PASSIVE"))
+      (node
+        (ref "R16")
+        (pin "2")
+        (pintype "PASSIVE")))
+    (net
+      (code 47)
+      (name "PIC32_RST_ESP")
+      (class "Default")
+      (node
+        (ref "R15")
+        (pin "1")
+        (pintype "PASSIVE"))
+      (node
         (ref "U2")
         (pin "10")
         (pintype "PASSIVE")))
     (net
-      (code 47)
+      (code 48)
+      (name "PIC32_RST_STM")
+      (class "Default")
+      (node
+        (ref "R16")
+        (pin "1")
+        (pintype "PASSIVE"))
+      (node
+        (ref "U1")
+        (pin "32")
+        (pintype "BIDIRECTIONAL")))
+    (net
+      (code 49)
       (name "SWCLK")
       (class "Default")
       (node
@@ -1540,7 +1616,7 @@
         (pin "37")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 48)
+      (code 50)
       (name "SWDIO")
       (class "Default")
       (node
@@ -1552,7 +1628,7 @@
         (pin "34")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 49)
+      (code 51)
       (name "UART_ESP_RX")
       (class "Default")
       (node
@@ -1564,7 +1640,7 @@
         (pin "8")
         (pintype "PASSIVE")))
     (net
-      (code 50)
+      (code 52)
       (name "UART_ESP_TX")
       (class "Default")
       (node
@@ -1576,7 +1652,7 @@
         (pin "7")
         (pintype "PASSIVE")))
     (net
-      (code 51)
+      (code 53)
       (name "UART_STM_RX")
       (class "Default")
       (node
@@ -1588,7 +1664,7 @@
         (pin "31")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 52)
+      (code 54)
       (name "UART_STM_TX")
       (class "Default")
       (node
@@ -1600,7 +1676,7 @@
         (pin "30")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 53)
+      (code 55)
       (name "VCC_33")
       (class "Default")
       (node
@@ -1612,7 +1688,7 @@
         (pin "33")
         (pintype "PASSIVE")))
     (net
-      (code 54)
+      (code 56)
       (name "VCC_35")
       (class "Default")
       (node
@@ -1624,7 +1700,7 @@
         (pin "35")
         (pintype "PASSIVE")))
     (net
-      (code 55)
+      (code 57)
       (name "VCC_36")
       (class "Default")
       (node
@@ -1636,7 +1712,7 @@
         (pin "36")
         (pintype "PASSIVE")))
     (net
-      (code 56)
+      (code 58)
       (name "VCC_37")
       (class "Default")
       (node
@@ -1648,7 +1724,7 @@
         (pin "37")
         (pintype "PASSIVE")))
     (net
-      (code 57)
+      (code 59)
       (name "WR")
       (class "Default")
       (node
