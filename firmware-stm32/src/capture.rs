@@ -29,7 +29,7 @@
 
 use core::future::poll_fn;
 use core::task::Poll;
-use embassy_stm32::dma::{ReadableRingBuffer, TransferOptions};
+use embassy_stm32::dma::{Priority, ReadableRingBuffer, TransferOptions};
 use embassy_stm32::gpio::{AnyPin, Input, Pull};
 use embassy_stm32::pac;
 use embassy_stm32::peripherals::{PA0, TIM2};
@@ -167,12 +167,22 @@ impl<'d> Capture<'d> {
 
         // Both channels: peripheral→memory, half-word, circular.
         // `ReadableRingBuffer::new` sets circular=true internally.
-        let opts = TransferOptions::default();
+        //
+        // DMA arbitration priority. On F1, equal software priority (PL)
+        // breaks ties by channel number (lower = higher), so with the
+        // default VeryHigh on both, PA (CH5) would beat PB (CH7). We want
+        // the PB read serviced first on each WR edge, so give PB the
+        // top PL and drop PA one notch below it. (The USART1_TX ring on
+        // CH4 keeps the default Low, so it never preempts capture.)
+        let mut pb_opts = TransferOptions::default();
+        pb_opts.priority = Priority::VeryHigh;
+        let mut pa_opts = TransferOptions::default();
+        pa_opts.priority = Priority::High;
         let pa_ring = unsafe {
-            ReadableRingBuffer::new(pa_dma, pa_req, gpioa_idr, pa_buf, opts)
+            ReadableRingBuffer::new(pa_dma, pa_req, gpioa_idr, pa_buf, pa_opts)
         };
         let pb_ring = unsafe {
-            ReadableRingBuffer::new(pb_dma, pb_req, gpiob_idr, pb_buf, opts)
+            ReadableRingBuffer::new(pb_dma, pb_req, gpiob_idr, pb_buf, pb_opts)
         };
 
         // TIM2 setup. Use the low-level Timer wrapper to handle RCC
@@ -186,14 +196,13 @@ impl<'d> Capture<'d> {
         // Stop the counter while we reconfigure.
         r.cr1().modify(|w| w.set_cen(false));
 
-        // ETR filter: 0 = no filter. The ETF[3:0] field in SMCR could
-        // give us a free hardware glitch filter (per the spec's note
-        // about reproducing the PIO firmware's reconfirm-after-glitch
-        // behaviour), but we leave it off for first bring-up — re-add
-        // ETF=0b0011 (require N consecutive samples) once we have real
-        // bus signals to tune against.
+        // ETR filter: FCK_INT_N8 (8 consecutive CK_INT samples). N2 made
+        // corruption worse (2.6% -> 5.9%); trying a longer window to see
+        // if it rejects whole glitch-bursts rather than nudging the
+        // trigger into the next bus state. Ladder: N2/N4/N8 at CK_INT,
+        // then FDTS_DIV* for much longer debounce.
         r.smcr().modify(|w| {
-            w.set_etf(pac::timer::vals::FilterValue::NO_FILTER);
+            w.set_etf(pac::timer::vals::FilterValue::FCK_INT_N8);
             w.set_etps(pac::timer::vals::Etps::DIV1);
             // Sample on WR *falling* edge, matching the Pico PIO
             // (`firmware/src/pio_capture.rs`). The PIC32 in the target
@@ -368,11 +377,16 @@ impl<'d> Capture<'d> {
         let pa_avail = (pa_write.wrapping_sub(self.pa_read_idx)) & RING_MASK;
         let pb_avail = (pb_write.wrapping_sub(self.pb_read_idx)) & RING_MASK;
 
-        // TODO: Too agressive, comment out.
-        //if pa_avail > RING_CAP / 2 || pb_avail > RING_CAP / 2 {
-            //self.hard_resync();
-            //return 0;
-        //}
+        // Overrun guard: if either channel's backlog exceeds half the
+        // ring, assume the DMA is about to lap us (NDTR can't tell a
+        // true lap from a large backlog) and hard-resync rather than
+        // drain torn data. May false-positive on a legitimately large
+        // burst, but that's the conservative choice — a resync shows up
+        // in cap_dropped, whereas torn samples are silent corruption.
+        if pa_avail > RING_CAP / 2 || pb_avail > RING_CAP / 2 {
+            self.hard_resync();
+            return 0;
+        }
 
         let n = pa_avail.min(pb_avail).min(out.len());
         const SAMPLE_MASK: u32 =

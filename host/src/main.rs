@@ -478,25 +478,40 @@ fn sync(
 
 /// Read from `reader` until it times out (no bytes arrived for one
 /// read-timeout window). Returns whether `needle` appeared anywhere
-/// in the drained bytes.
+/// in the drained bytes. Logs how much was discarded (and a hex
+/// preview) so a failed sync shows what the firmware actually sent.
 fn drain_until_quiet(
     reader: &mut (dyn Read + Send),
     needle: u8,
 ) -> anyhow::Result<bool> {
     let mut saw_needle = false;
+    let mut total = 0usize;
+    let mut preview: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
-    loop {
+    let result = loop {
         match reader.read(&mut buf) {
-            Ok(0) => return Ok(saw_needle),
+            Ok(0) => break Ok(saw_needle),
             Ok(n) => {
+                total += n;
+                if preview.len() < 32 {
+                    preview.extend_from_slice(&buf[..n.min(32 - preview.len())]);
+                }
                 if buf[..n].contains(&needle) {
                     saw_needle = true;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(saw_needle),
-            Err(e) => return Err(e.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break Ok(saw_needle),
+            Err(e) => break Err(e.into()),
         }
-    }
+    };
+    eprintln!(
+        "sync: discarded {} bytes while draining (looking for {:#04x}, {}); first bytes: {:02x?}",
+        total,
+        needle,
+        if saw_needle { "FOUND" } else { "not found" },
+        preview,
+    );
+    result
 }
 
 
