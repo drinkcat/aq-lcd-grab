@@ -1,4 +1,4 @@
-# target device Capture PCB — Design Spec
+# Capture PCB — Design Spec
 
 Working spec for an inline capture board: sits between the target device
 main board and its LCD via two 39-pin flex connectors, taps the
@@ -20,8 +20,8 @@ material reduction in bring-up risk for the same form factor. See
 
 ```
                   +-------------------+
-   target main    |    Capture PCB    |     target LCD
-   board          |                   |
+   main board     |    Capture PCB    |     LCD
+                  |                   |
         flex 39p  |  STM32F103C8T6    |  flex 39p
    ============== | passthrough + tap |==============
                   |                   |
@@ -294,9 +294,9 @@ RP2350's "single source of truth" property is lost. Mitigations:
   means the Xiao cannot be powered from its own USB-C while the
   capture PCB is connected to the target.
 - **To reflash the ESP32 standalone:** disconnect the 3V3 pin in the
-  3-wire connector to the target main board so the Xiao can run from
+  3-wire connector to the main board so the Xiao can run from
   its own USB-C without back-driving the rail.
-- **Risk to validate:** Xiao C6 WiFi TX pulls 200–300 mA peaks. target
+- **Risk to validate:** Xiao C6 WiFi TX pulls 200–300 mA peaks. Target
   3V3 must source that on top of the display backlight load. Measure
   the target 3V3 headroom before committing.
 - **Fallback if 3V3 headroom is insufficient:** a 2-pin 2.54 mm header
@@ -325,7 +325,7 @@ Plus 22 µF + 100 µF bulk near the Xiao 3V3 pad to absorb WiFi TX
 transients locally rather than burdening the target regulator's
 transient response (see Q6 mitigation).
 
-### Connection to target main board
+### Connection to main board
 
 - 3-pin connector on the capture PCB: 3V3 (power tap), GND, PIC32
   reset. The target main board exposes a 5-pin header but we only
@@ -460,7 +460,7 @@ crystal is fitted). Plenty of test-point and future-bodge headroom.
 These need answers before schematic. Tackle them in roughly this order;
 items earlier in the list block later ones.
 
-### target. JLCPCB BOM cost review — every part, not just the flex
+### Q10. JLCPCB BOM cost review — every part, not just the flex
 
 Originally just about the flex connector, but JLCPCB shuffles parts
 between basic and extended libraries frequently and "extended" adds
@@ -680,7 +680,7 @@ today: open-drain, **never drive high**.
 
 **(b) Power-on hold-low.** On board power-on, MCLR should be held
 asserted (= low, **double-check polarity against the PIC32 part
-on the target main board before fab**) until the STM32 firmware is
+on the main board before fab**) until the STM32 firmware is
 running and has explicitly released it. Otherwise the target starts
 running while our capture chain is still in reset, and we miss the
 boot-time display traffic.
@@ -716,7 +716,7 @@ charging (so the exact RC value isn't load-bearing).
 
 ⚠ **Polarity double-check** before BOM: PIC32 MCLR is conventionally
 active-low (asserted = low). Confirm against the specific PIC32
-part on the target main board — prior-project note says "open-drain
+part on the main board — prior-project note says "open-drain
 with pull-up on the main board" which is consistent with active-low,
 but worth re-verifying with a scope during bring-up.
 

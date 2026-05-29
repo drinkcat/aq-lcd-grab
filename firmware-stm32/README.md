@@ -63,7 +63,7 @@ picocom -b 115200 /dev/ttyUSB0    # or screen, minicom, tio, etc.
 If you used the same adapter for flashing, close `stm32flash` first
 (the runner exits cleanly) before opening the terminal.
 
-## Bench-rig wiring (target → Blue Pill F103C8)
+## Bench-rig wiring (display bus → Blue Pill F103C8)
 
 The PCB and final firmware will use TIM1/PA12 for WR, but bench
 development on a Blue Pill uses TIM2/PA0 because the Blue Pill ties
@@ -74,7 +74,7 @@ external WR signal.
 PA0 (fixed; TIM2 ETR). The two GPIO ports are read by separate DMA
 channels and can develop a one-sample pairing skew under sustained
 command bursts (the DMA arbiter services the two channels a cycle
-apart, by which time the PIC32 in the target has advanced the bus — see
+apart, by which time the bus driver has advanced the bus — see
 commit notes). To keep the rig useful even if one port's capture
 fails, we pack **everything needed to decode the command stream plus
 a colour image onto GPIOB alone**: DC (framing), the whole low data
@@ -105,7 +105,7 @@ Full GPIOA map (PA0–PA15) — WR + colour-refinement bits + CS. All
 non-reserved pins are read together in the single GPIOA->IDR DMA;
 "reserved" = not available for capture:
 
-| F103 pin | Use            | target pin | Cable  | Notes                          |
+| F103 pin | Use            | Bus pin | Cable  | Notes                          |
 |----------|----------------|---------|--------|--------------------------------|
 | PA0      | WR (TIM2 ETR)  | 24      | green  | clocks the capture             |
 | PA1      | DB8 (G3)       | 10      |        |                                |
@@ -128,7 +128,7 @@ Full GPIOB map (PB0–PB15) — the self-sufficient port: DC + low byte
 DB0–DB7 + the top two red (R4/R3) and top two green (G5/G4) bits. In
 pin order:
 
-| F103 pin | Use         | target pin | Cable  | Notes                        |
+| F103 pin | Use         | Bus pin | Cable  | Notes                        |
 |----------|-------------|---------|--------|------------------------------|
 | PB0      | DB14 (R3)   | 16      |        | red                          |
 | PB1      | DB15 (R4)   | 17      |        | red MSB                      |

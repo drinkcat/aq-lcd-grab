@@ -1,14 +1,14 @@
-# target device Display Reverse Engineering
+# Display Protocol Reverse Engineering
 
 ## Goal
 
-Capture the MCU → display protocol on the target device air quality monitor and
+Capture the MCU → display protocol on the target air quality monitor and
 decode the partial-update rectangle commands so we can mirror / log the display
 contents.
 
 ## Device
 
-- **target device** — Taiwanese air quality monitor (PM2.5, TVOC, CO2, temp, humidity)
+- **Target device** — air quality monitor (PM2.5, TVOC, CO2, temp, humidity)
 - **MCU**: PIC32MM (low-power MIPS, typically 25 MHz max, 16–32 KB RAM)
 - **Display**: 3.5" color TFT, no touch, simple UI with colored polygons + text
 
@@ -83,7 +83,7 @@ It is an **18-bit-capable 8080 bus** (DB0–DB17), but the IM strap pins select
 - [ ] DC behavior at burst boundaries → identify command bytes
 - [ ] Identify Set Column Address (`0x2A`), Set Row Address (`0x2B`), Memory
       Write (`0x2C`) commands and their arguments
-- [ ] Read Display ID (`0x04`) if the PIC32MM ever issues it on startup
+- [ ] Read Display ID (`0x04`) if the bus driver ever issues it on startup
 
 ## Capture Hardware Plan
 

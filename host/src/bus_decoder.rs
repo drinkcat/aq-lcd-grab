@@ -7,7 +7,7 @@
 //!
 //! Whether DC or CS provides the framing signal is a per-board choice
 //! made in `permute.rs` — on the Pico capture rig the panel's DC line
-//! is what changes per byte; on the F103 board the target's PIC32 holds
+//! is what changes per byte; on the F103 board the capture target holds
 //! DC high constantly and uses CS as the cmd/data discriminator
 //! instead.
 

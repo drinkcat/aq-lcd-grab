@@ -1,7 +1,7 @@
 # `firmware-stm32/` design
 
 Capture firmware for the STM32F103C8 (Blue Pill bench rig today, fab'd
-PCB later). Samples the target device's 8080 display bus on every WR
+PCB later). Samples the 8080 display bus on every WR
 strobe and ships the samples to the host over UART using the tagged
 wire protocol in [`docs/wire_protocol.md`](wire_protocol.md).
 
@@ -9,7 +9,7 @@ wire protocol in [`docs/wire_protocol.md`](wire_protocol.md).
 
 ```
                                             ┌──────────────────────┐
-  target WR rising edge                     │ async runtime: 4 fut │
+  WR rising edge                            │ async runtime: 4 fut │
   ───────────────────►                      │  joined together     │
             │                               │                      │
             ▼                               │  led_fut             │
@@ -44,7 +44,7 @@ wire protocol in [`docs/wire_protocol.md`](wire_protocol.md).
 
 ## Capture front-end (`capture.rs`)
 
-The target's WR strobe drives **PA0 = TIM2_ETR**. TIM2 runs in
+The WR strobe drives **PA0 = TIM2_ETR**. TIM2 runs in
 external-clock mode 2 (`SMCR.ECE = 1`), so the timer's counter
 increments on every rising edge of WR — no CPU involvement.
 

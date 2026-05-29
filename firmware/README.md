@@ -1,7 +1,7 @@
 # aq-lcd-grab firmware
 
 Embassy firmware for the Raspberry Pi Pico 2 W (RP2350) — capture target for
-the [target device display protocol reverse-engineering](../docs/display_notes.md).
+the [display protocol reverse-engineering](../docs/display_notes.md).
 
 Current state: PIO+DMA capture, streaming raw `(pa, pb)` samples to the
 host over USB CDC using the tagged wire protocol in

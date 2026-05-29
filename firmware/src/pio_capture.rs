@@ -1,4 +1,4 @@
-//! PIO program for capturing the target device's 16-bit 8080 MCU bus.
+//! PIO program for capturing a 16-bit 8080 MCU bus.
 //!
 //! Pin assignment (consecutive GPIOs required for `in pins, N`):
 //!

@@ -2,14 +2,14 @@
 
 Scope:
   - Two 39-pin flex connectors as a straight pass-through between the
-    target main board and the LCD.
+    main board and the LCD.
   - STM32F103C8T6 capture MCU (LQFP-48) tapping the display bus. See
     docs/pcb_spec.md for the rationale (JLCPCB basic-library part, no
     external SMPS, internal flash drops the UART-boot dance; chose
     F103 over the briefly-considered F030 for 20 kB SRAM + Cortex-M3).
   - Xiao ESP32-C6 (DIP-mount module) for WiFi + STM32 reflashing over
     USART1.
-  - 3-pin connector to the target main board for 3V3 tap + PIC32 reset.
+  - 3-pin connector to the main board for 3V3 tap + PIC32 reset.
   - SWD header on the STM32 for bring-up / fallback flashing.
   - Status LED on STM32 PC13 (matches the Blue/Black Pill dev-board
     pinout so the same firmware blinks both; PB2 was the F030 draft
@@ -17,9 +17,9 @@ Scope:
     plus USART2 + spare-GPIO bring-up pads.
 
 Connectors:
-  - J1: main-board side flex   (cable to the target PIC32 motherboard)
+  - J1: main-board side flex   (cable to the PIC32 motherboard)
   - J2: display side flex      (cable to the LCD)
-  - J3: 3-pin connector to target (3V3, GND, PIC32 reset)
+  - J3: 3-pin connector to main board (3V3, GND, PIC32 reset)
   - J5: 3-pin SWD header for STM32 (SWCLK / GND / SWDIO)
 
 The flex connectors face opposite directions on the PCB, so J1[i] lines
@@ -171,13 +171,13 @@ for net_label, ref in GND_TIE_REFS:
 
 
 # =============================================================================
-# 3-pin power connector to target main board
+# 3-pin power connector to main board
 # (3V3 tap, GND, PIC32 reset)
 # =============================================================================
 J3 = Part("Connector", "Conn_01x03_Socket",
           footprint="Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
           ref="J3",
-          tag="J3_AIRRUN_POWER")
+          tag="J3_MAINBOARD_POWER")
 PIC32_RESET = Net("PIC32_RESET")   # open-drain from ESP32 (see ESP32 section)
 J3[1] += P3V3
 J3[2] += GND
@@ -195,7 +195,7 @@ J3[3] += PIC32_RESET
 J4 = Part("Connector", "Conn_01x02_Socket",
           footprint="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
           ref="J4",
-          tag="J4_AIRRUN_5V_TAP")
+          tag="J4_TARGET_5V_TAP")
 J4[1] += P5V
 J4[2] += GND
 
@@ -426,7 +426,7 @@ for pad_num, ref, tag in TEST_POINTS:
 #
 # Single-edge routing: connected pins 7–14 land on the back edge as
 # drawn. Pads 1–6 are intentionally left unconnected. To reflash the
-# ESP32 standalone, unplug the 3-pin target connector so the Xiao can
+# ESP32 standalone, unplug the 3-pin main board connector so the Xiao can
 # run from its own USB-C without back-driving the target 3V3 rail.
 U2 = Part("Connector_Generic", "Conn_01x14",
           footprint="esp32c6:XIAO-ESP32-C6-DIP",

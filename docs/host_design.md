@@ -1,7 +1,7 @@
 # `host/` design
 
 The viewer turns a serial byte stream from a capture board into a live
-reconstruction of the target device's display, plus a side panel of decoded
+reconstruction of the capture target's display, plus a side panel of decoded
 sensor values.
 
 ## End-to-end pipeline

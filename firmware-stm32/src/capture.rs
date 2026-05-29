@@ -144,8 +144,8 @@ impl<'d> Capture<'d> {
         // Configure every wired data/control pin as a floating input.
         // Without this they default to whatever reset/other-peripheral
         // state left them in; undriven pins float and corrupt the IDR
-        // reads (seen as 0xffff floods that break RLE). The target drives
-        // the bus actively, so Pull::None is correct — no pull to fight
+        // reads (seen as 0xffff floods that break RLE). The bus driver
+        // is active, so Pull::None is correct — no pull to fight
         // the driver.
         let data = pins.data.map(|p| Input::new(p, Pull::None));
 
@@ -197,7 +197,7 @@ impl<'d> Capture<'d> {
             w.set_etf(pac::timer::vals::FilterValue::FCK_INT_N8);
             w.set_etps(pac::timer::vals::Etps::DIV1);
             // Sample on WR *falling* edge, matching the Pico PIO
-            // (`firmware/src/pio_capture.rs`). The PIC32 in the target
+            // (`firmware/src/pio_capture.rs`). The bus driver
             // appears to deassert DC slightly before WR rises (8080
             // timing violation), so sampling at the rising edge sees
             // DC already back to "data" even for command bytes.

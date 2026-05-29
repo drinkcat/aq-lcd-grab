@@ -55,7 +55,7 @@ const DRAIN_CHUNK: usize = 1024;
 
 /// Outbound byte pipe (encoder → USB sender). 4 KiB holds ~60 ms at
 /// USB-FS bulk burst rate (≈ 64 kB/s) and ~10 KB worth of typical
-/// target bus traffic — plenty to bridge a USB stall.
+/// display bus traffic — plenty to bridge a USB stall.
 ///
 /// We use a byte-oriented `Pipe` rather than a `Channel<u8>` because the
 /// USB sender needs bulk reads to fill 64-byte packets; pulling one byte

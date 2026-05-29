@@ -58,7 +58,7 @@ Notes:
 - usbmon records every URB twice (Submit + Complete). The Submit
   entries carry `data_len=0` for IN transfers, so always filter on
   `usb.data_len > 0` or you'll double-count ZLPs you don't have.
-- Wire-rate bursts of ~200 kB/s happen briefly during target screen
+- Wire-rate bursts of ~200 kB/s happen briefly during display screen
   redraws — that's normal and well within USB FS bulk. Sustained
   rates above ~60 kB/s are the danger zone.
 

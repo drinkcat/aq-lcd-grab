@@ -121,7 +121,7 @@ impl Framebuffer {
 
     /// Convert the RGB565 framebuffer to RGBA8 for egui display.
     /// The panel scans left-to-right top-to-bottom but is physically
-    /// mounted upside-down in the target, so we rotate 180° here.
+    /// mounted upside-down on the target device, so we rotate 180° here.
     pub fn to_rgba8(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 4);
         for &px in self.pixels.iter().rev() {
