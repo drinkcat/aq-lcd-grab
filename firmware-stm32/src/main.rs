@@ -160,7 +160,6 @@ async fn main(_spawner: Spawner) {
     //         CMD_QUEUE.send(cmd).await;
     //     }
     // };
-    let _ = &led;
 
     // Boot STOPPED: the host drives START/STOP over the control path
     // (polled from RXNE in the cap loop below).
@@ -259,7 +258,9 @@ async fn main(_spawner: Spawner) {
             // ship, and sleep a tick so we don't spin.
             if state != StreamState::Streaming {
                 sink.kick();
+                led.set_low(); // PC13 is active-low: low = lit
                 let _ = capture.take_dropped();
+                led.set_high(); // high = dark
                 embassy_time::Timer::after_millis(1).await;
                 continue;
             }
@@ -277,6 +278,7 @@ async fn main(_spawner: Spawner) {
                     encoder.log(msg, &mut sink);
                 }
             } else {
+                led.set_low(); // lit while draining a burst
                 // Tight backlog drain. As long as the previous drain
                 // filled the chunk, the rings probably have more
                 // sitting behind it — keep draining synchronously
@@ -304,6 +306,7 @@ async fn main(_spawner: Spawner) {
                 }
 
                 last_idle_log = embassy_time::Instant::now();
+                led.set_high(); // dark when the burst is drained
             }
 
             // Auto-STATS heartbeat every ~5 s while streaming.
