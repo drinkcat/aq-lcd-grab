@@ -65,10 +65,10 @@ If you used the same adapter for flashing, close `stm32flash` first
 
 ## Bench-rig wiring (display bus → Blue Pill F103C8)
 
-The PCB and final firmware will use TIM1/PA12 for WR, but bench
-development on a Blue Pill uses TIM2/PA0 because the Blue Pill ties
-PA12 to 3V3 through a 1.5 kΩ USB-DP pull-up that distorts an
-external WR signal.
+Both the Blue Pill bench rig and the fab'd capture PCB use TIM2/PA0
+for WR. The Blue Pill ties PA12 to 3V3 through a 1.5 kΩ USB-DP
+pull-up that would distort an external WR signal, so using PA0 on
+both keeps one firmware for both boards.
 
 **Two-DMA routing, GPIOB self-sufficient.** WR clocks the capture on
 PA0 (fixed; TIM2 ETR). The two GPIO ports are read by separate DMA

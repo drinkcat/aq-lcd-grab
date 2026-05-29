@@ -8,11 +8,10 @@
 //! line (UDE, CC1DE) enabled in DIER, so two DMA channels fire from a
 //! single WR edge.
 //!
-//! On Blue Pill bring-up boards we use **TIM2 (ETR=PA0)** rather than
-//! TIM1 (ETR=PA12), because the Blue Pill ties PA12 to 3V3 through a
-//! 1.5 kΩ USB-DP pull-up that distorts an externally driven WR signal.
-//! The fab'd capture-board PCB has no such pull and can go back to
-//! TIM1/PA12 once it's brought up.
+//! WR is on **PA0 = TIM2_ETR** on both the Blue Pill bench rig and the
+//! fab'd capture PCB.  (The Blue Pill ties PA12 to 3V3 through a 1.5 kΩ
+//! USB-DP pull-up; using TIM2/PA0 on the PCB too keeps one firmware for
+//! both boards.)
 //!
 //!   TIM2_UP  → DMA1 Ch2 → reads `GPIOB->IDR` → PB ring
 //!   TIM2_CH1 → DMA1 Ch5 → reads `GPIOA->IDR` → PA ring

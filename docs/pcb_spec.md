@@ -75,7 +75,7 @@ because:
 - **Ecosystem.** F103 is the most-supported STM32 in existence
   (Blue Pill heritage). Faster iteration on examples and gotchas.
 - **Pin-compatible.** Same LQFP-48, same usable AFs for the pins
-  we care about (PA9/PA10 USART1, PA12 TIM1_ETR, PA13/PA14 SWD).
+  we care about (PA0 TIM2_ETR, PA9/PA10 USART1, PA13/PA14 SWD).
   The pin map below transfers verbatim from the F030 draft.
 - **DMA channel mapping differs** (F103 has 7 channels vs F030's
   5; TIM1_UP is on Ch5, TIM1_CH1 on Ch2, TIM1_CH2 on Ch3 — see
@@ -89,7 +89,7 @@ Net cost delta ≈ +$0.10–0.20 per board for a meaningful reduction
 in bring-up risk. The earlier F030-specific text below documents
 the alternative for future reference.
 
-#### Capture path: TIM1 + multi-channel DMA from GPIOx→IDR
+#### Capture path: TIM2 + multi-channel DMA from GPIOx→IDR
 
 Replaces the RP2350 PIO + DMA-ring approach. The target's WR strobe runs
 at ~667 kHz (1.5 µs period, ~500 ns low pulse) — well within F103's
@@ -106,7 +106,7 @@ peripherals on the same pins for what we use. Verified against:
 
 The naive "PA0–PA15 = DB0–DB15" plan is **not viable** because:
 
-- **PA12 = TIM1_ETR.** Need PA12 free for the capture trigger.
+- **PA0 = TIM2_ETR.** Need PA0 free for the capture trigger.
 - **PA13/PA14 = SWDIO/SWCLK** (default reset state). Repurposing
   them removes the ability to attach an ST-Link for bring-up.
 - **PA9/PA10 = USART1 default** for the ROM bootloader. AN2606
@@ -114,9 +114,8 @@ The naive "PA0–PA15 = DB0–DB15" plan is **not viable** because:
   F030 and F103; PA9/PA10 must stay USART1-capable for
   ESP32-driven flashing.
 
-So PA0–PA11 are usable for capture (with PA9/PA10 multifunction —
-see below), and PA12–PA15 are reserved for ETR + SWD + USART1
-infrastructure.
+So PA1–PA11 are usable for data capture (with PA9/PA10 multifunction —
+see below), and PA13–PA15 are reserved for SWD.
 
 ##### Pin allocation (rules, not a fixed map)
 
@@ -129,7 +128,7 @@ exists in software.
 
 What must be true (hard constraints):
 
-- **PA12 = WR** (TIM1_ETR; no remap on F103).
+- **PA0 = WR** (TIM2_ETR; no remap needed — CH1_ETR multiplexed on PA0).
 - **PA9 = USART1_TX, PA10 = USART1_RX**: permanent, single
   ESP32 ↔ STM32 link, used both for ROM-bootloader flashing
   (AN2606) and runtime data.
@@ -141,35 +140,53 @@ What must be true (hard constraints):
 - **DC and CS** on any free pin on either port. Both `GPIOA->IDR`
   and `GPIOB->IDR` are read every WR edge by parallel DMA channels
   (Q12), so a captured pin on either port is decodable in software.
+  DC must be on PB so the PB port is self-sufficient for decoding;
+  CS can be on PA.
 - **Status LED** on any free pin outside the boot-strap pins.
   Convention: PC13, matching the Blue/Black Pill onboard LED so the
   same firmware blinks both dev board and PCB.
 
 Pin assignments to fix in routing (flexible):
 
-- **Data bus (DB0–DB15)** must use 8 pins on PA + 8 pins on PB.
-  - PA-side bits: pick 8 pins from PA0–PA8, PA11, PA15 (excluding
-    PA9/PA10/PA12/PA13/PA14 and PA8/PA11/PA15 only if free of JTAG
-    in your firmware config). PA0–PA8 + PA11 is the natural 10-
-    candidate pool — pick whichever 8 the router likes best.
-  - PB-side bits: pick 8 pins from PB0–PB15 excluding PB2 (BOOT1).
-    Any 8 of the remaining 15 are fine — the host permute step
-    doesn't care which bit positions within `GPIOB->IDR` we use,
-    so high-byte vs low-byte alignment doesn't matter.
+- **Data bus (DB0–DB15)** is split across PA and PB.
+  - PA-side bits: any free pins from PA1–PA8, PA11, PA15 (excluding
+    PA0/WR, PA9/PA10/USART1, PA13/PA14/SWD; PA15 needs JTAG-disabled).
+  - PB-side bits: any free pins from PB0–PB15 excluding PB2 (BOOT1).
+    The host permute step doesn't care which bit positions within
+    `GPIOB->IDR` we use.
 - The logical "DB0..DB15" identity of each pin is **defined by
   the SKiDL net names**, not by physical location. Routing can
-  shuffle freely within each port; the host decoder will pick up
-  the mapping from a single `LOGICAL_TO_PHYSICAL[16]` table.
+  shuffle freely within each port (not crossing ports); the host
+  decoder picks up the mapping from a single `LOGICAL_TO_PHYSICAL[16]`
+  table.
 
-Suggested starting allocation (used for area estimation in Q8;
-swap freely during routing):
+Suggested starting allocation (matches the bench-rig mapping in
+`firmware-stm32/README.md` exactly, so `host/src/permute.rs::permute_f103`
+covers both boards; swap freely within PA or within PB — but PA0 is
+fixed as WR/TIM2_ETR and must not be reassigned):
 
-| Signal     | Pin (suggested) | Notes                                  |
-|------------|-----------------|----------------------------------------|
-| DB-low ×8  | PA0–PA7         | LQFP-48 pins 10–17, one clean edge     |
-| DB-high ×8 | PB8–PB15        | LQFP-48 pins 21–22, 25–28, 45–46       |
-| DC, CS     | PB0, PB1        | any free pin on either port (Q12)      |
-| LED        | PC13            | matches Blue/Black Pill onboard LED    |
+| Flex pin | Signal          | STM32 pin | Notes                                          |
+|----------|-----------------|-----------|------------------------------------------------|
+| 2        | DB0             | PB5       | full low byte on PB — all opcodes + low colour |
+| 3        | DB1             | PB6       |                                                |
+| 4        | DB2             | PB7       |                                                |
+| 5        | DB3             | PB8       |                                                |
+| 6        | DB4             | PB9       |                                                |
+| 7        | DB5             | PB10      |                                                |
+| 8        | DB6             | PB11      |                                                |
+| 9        | DB7             | PB12      |                                                |
+| 10       | DB8 (G3)        | PA1       | colour-refinement, PA side                     |
+| 11       | DB9 (G4)        | PB13      | green MSB pair on PB                           |
+| 12       | DB10 (G5)       | PB14      |                                                |
+| 13       | DB11 (R0)       | PA2       | colour-refinement, PA side                     |
+| 14       | DB12 (R1)       | PA3       |                                                |
+| 15       | DB13 (R2)       | PA4       |                                                |
+| 16       | DB14 (R3)       | PB0       | red MSB pair on PB                             |
+| 17       | DB15 (R4)       | PB1       |                                                |
+| 22       | WR              | PA0       | TIM2_ETR; fixed, must not be swapped           |
+| 23       | DC              | PB15      | framing signal; must be on PB (self-sufficient)|
+| 24       | CS              | PA5       | unused in decode; PA side is fine              |
+| —        | LED             | PC13      | matches Blue/Black Pill onboard LED            |
 
 The header [`firmware/src/pio_capture.rs`](../firmware/src/pio_capture.rs)
 shows the prototype's bit-to-pin mapping for the Pico 2 W — it's
@@ -181,26 +198,24 @@ piece that grows an F103 entry alongside the existing Pico one.
 
 ##### Capture mechanism (2 DMA channels, F103-verified)
 
-TIM1 in **external clock mode 2** (ECE=1 in TIM1_SMCR), clocked by
-ETR (= WR). With **ARR=0**, every ETR edge increments the counter
-to 0 and triggers an update event (UEV); a CC1 channel in
-output-compare mode with CCR=0 generates a compare-match event on
-the same cycle.
+TIM2 in **external clock mode 2** (ECE=1 in TIM2_SMCR), clocked by
+ETR (= WR on PA0 = TIM2_CH1_ETR). Both input-capture channels CC1
+and CC2 point at TI1 (the same PA0 pin), so both fire on every WR
+edge. Each has an independent DMA request line (CC1DE, CC2DE) in
+DIER. The line-to-channel routing is in RM0008 Table 78 for F103:
 
-Each TIM1 event has an independent DMA request line, enabled via
-the DIER register: UDE, CC1DE, etc. The line-to-channel routing
-is in RM0008 Table 78 for F103 (different on F030 — RM0360 Table
-26):
+| TIM2 source | DMA1 channel | Notes                               |
+|-------------|--------------|-------------------------------------|
+| TIM2_CH1    | Ch 5         | reads `GPIOA->IDR` → data-PA ring   |
+| TIM2_CH2    | Ch 7         | reads `GPIOB->IDR` → data-PB + ctrl ring |
 
-| TIM1 source | DMA1 channel | Notes                            |
-|-------------|--------------|----------------------------------|
-| TIM1_CH1    | Ch 2         | reads `GPIOA->IDR` → data-PA ring   |
-| TIM1_UP     | Ch 5         | reads `GPIOB->IDR` → data-PB + ctrl ring |
-| TIM1_CH3    | Ch 6         | optional: counter snapshot ring  |
+Both channels fire on the same WR edge because both input-captures
+point at TI1/PA0.
 
-Both primary channels fire on the same WR edge because TIM1's
-overflow simultaneously produces UEV and the CH1 compare-match
-event.
+Note: TIM2_UP (Ch2) was considered but `ARR=0 + ECE + UDE` does not
+reliably fire DMA on F103 (empirically verified). Dual input-capture
+(CC1 + CC2 both reading TI1) sidesteps this — it triggers directly
+off the input edge rather than depending on UEV.
 
 **Ch 5 conflict:** Ch 5 is also `USART1_RX`'s default DMA channel,
 and F103 has no DMA remap. Run USART1 RX interrupt-driven instead —
@@ -209,7 +224,7 @@ direction is STM32→ESP32 streaming captured bursts), so even at
 1 Mbaud the ISR load is negligible.
 
 **Hardware glitch filter free with ETR:** ETR has a built-in
-digital filter (ETF[3:0] in TIM1_SMCR), so we can replicate the
+digital filter (ETF[3:0] in TIM2_SMCR), so we can replicate the
 RP2350 PIO's `wait 0 gpio 18 [2]` glitch-reconfirm in hardware by
 setting ETF to require N consecutive samples at the new level
 before propagating ETRF. The Pico 2 W firmware filtered glitches
@@ -220,7 +235,7 @@ line ~98); we get equivalent filtering for free.
 to `&GPIOx->IDR` (16-bit half-word), `PINC=0` (source no
 increment), `MINC=1` (destination increment), `MEM2MEM=0`
 (peripheral mode — wait for HW request), the channel waits for its
-peripheral request from TIM1 and on each request copies one
+peripheral request from TIM2 and on each request copies one
 half-word from `GPIOx->IDR` to the next ring slot. Wrap by setting
 the destination buffer to a power-of-2-aligned span and reloading
 the counter via circular mode (`CIRC=1`).
@@ -231,14 +246,12 @@ the counter via circular mode (`CIRC=1`).
   0x2B, 0x2C…) vs RGB565 pixel data. Capturing it on a second DMA
   channel is the F030 equivalent of what the RP2350 PIO did by
   shifting `{CS, DC, DB15..DB0}` into a single 18-bit FIFO entry.
-- **Mechanism:** TIM1 in slave mode, clocked by ETR (WR). On every
-  WR edge (configurable rising/falling — current PIO firmware uses
-  falling-edge sampling with a 2-cycle reconfirm filter), TIM1
-  update event triggers two DMA channels in parallel: channel A
-  copies `GPIOA->IDR` (data bus) and channel B copies `GPIOB->IDR`
-  (control bus, mask off in software) into their respective rings.
-  CPU is uninvolved per-sample; firmware processes bursts at the
-  boundaries detected by an idle-period timer.
+- **Mechanism:** TIM2 in slave mode, clocked by ETR (WR). On every
+  WR edge, TIM2 input-capture events trigger two DMA channels in
+  parallel: channel A copies `GPIOA->IDR` (data bus) and channel B
+  copies `GPIOB->IDR` (control bus, mask off in software) into their
+  respective rings. CPU is uninvolved per-sample; firmware processes
+  bursts at the boundaries detected by an idle-period timer.
 - **Ring buffer sizing:** average burst is ~3,300 × 2 bytes (data) +
   ~3,300 × 2 bytes (control) ≈ 13 kB. F103's 20 kB SRAM holds a full
   burst with room for stack + USART buffers + Embassy executor, so
@@ -340,7 +353,7 @@ transient response (see Q6 mitigation).
 - Two 39-pin flex connectors, board sits inline (man-in-the-middle):
   most signals pass straight through, capture-relevant signals also
   fan out to STM32 GPIOs.
-- Capture mechanism on STM32: WR drives TIM1_ETR; per-edge DMA reads
+- Capture mechanism on STM32: WR drives TIM2_ETR (PA0); per-edge DMA reads
   of `GPIOA->IDR` and `GPIOB->IDR` into two ring buffers. Data bus,
   DC, and CS are all captured (DC/CS are on PB pins along with the
   data-PB byte). See "Capture mechanism" under MCU above for the
@@ -385,8 +398,9 @@ Bring-up:
 
 ### Bring-up test points
 
-- **General-purpose test points** on free STM32 GPIOs PB3, PB4, PB5
-  (contiguous with PB0–PB2 already in use for DC/CS/BOOT1).
+- **General-purpose test points** on free STM32 GPIOs PB3, PB4, PA6
+  (PB3/PB4 are JTAG outputs at reset — need `SWJ_CFG=010` — and PA6
+  is a plain free GPIO).
 - All exposed as small SMD pads at the board edge; no headers needed.
 
 ## ESP32-C6 (Xiao) resources
@@ -425,7 +439,7 @@ Table 11).
 
 | Function                       | Pin    | LQFP-48 # | Constraint        |
 |--------------------------------|--------|-----------|-------------------|
-| WR (TIM1_ETR)                  | PA12   | 33        | TIM1_ETR has no remap on F103; capture trigger lands here. |
+| WR (TIM2_ETR)                  | PA0    | 10        | TIM2 CH1_ETR on PA0; same pin as bench rig (no remap needed). |
 | USART1 RX (boot + runtime)     | PA10   | 31        | ROM bootloader pin (AN2606), no DMA remap. |
 | USART1 TX (boot + runtime)     | PA9    | 30        | ROM bootloader pin (AN2606), no DMA remap. |
 | SWDIO                          | PA13   | 34        | Debug; firmware AFIO `SWJ_CFG=010` to keep SWD and disable JTAG. |
@@ -444,16 +458,17 @@ Within each port, route whatever pin order is convenient.
 
 | Function                       | Allowed pin pool                          |
 |--------------------------------|--------------------------------------------|
-| Data bus PA-half (8 bits)      | 8 pins chosen from PA0–PA8, PA11, PA15. PA15 needs JTAG-disabled. |
-| Data bus PB-half (8 bits)      | 8 pins chosen from PB0–PB15 except PB2 (BOOT1). |
-| DC, CS                         | Any 2 free pins on either port — both `GPIOA->IDR` and `GPIOB->IDR` are read every WR edge by parallel DMA channels. |
+| Data bus PA-half               | Any free pins from PA1–PA8, PA11, PA15. PA15 needs JTAG-disabled. |
+| Data bus PB-half               | Any free pins from PB0–PB15 except PB2 (BOOT1). |
+| DC                             | Any free PB pin (keep on PB for self-sufficient decode). |
+| CS                             | Any free pin on either port. |
 | Status LED                     | Any free pin outside the boot-strap rails. |
 
-Free pool after a typical 16-bit data + DC/CS + LED allocation:
-PA8, PA11, PA15 (JTDI — JTAG disable required), PB3 (JTDO —
-likewise), PB4 (NJTRST — likewise), PB6, PB7 (or whichever PB pair
-isn't taken by DC/CS), PD0/PD1 (OSC; usable as GPIO when no
-crystal is fitted). Plenty of test-point and future-bodge headroom.
+Free pool after the suggested allocation above:
+PA6, PA7, PA8, PA11, PA12, PA15 (JTDI — JTAG disable required),
+PB3 (JTDO — likewise), PB4 (NJTRST — likewise),
+PD0/PD1 (OSC; usable as GPIO when no crystal is fitted).
+Plenty of test-point and future-bodge headroom.
 
 ## Open questions
 

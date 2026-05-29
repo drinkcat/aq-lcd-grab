@@ -315,44 +315,41 @@ R_UART_RX[1] += UART_STM_RX; R_UART_RX[2] += UART_ESP_TX
 # DBn identity of any given STM32 pad is therefore not load-bearing —
 # the host decoder applies a permutation, derived from this very table,
 # that undoes whatever order we pick here. Routing is free to swap DBn
-# labels between entries within the same port (PA0..PA7 stay PA pins,
-# PB-pins stay PB pins); changing the table here is the only thing
+# labels between entries within the same port (PA pins stay PA pins,
+# PB pins stay PB pins); changing the table here is the only thing
 # needed to retarget the host decoder. See docs/pcb_spec.md
 # "Pin allocation (rules, not a fixed map)" and Q17.
 #
 # What is *forced* by silicon:
-#   - WR -> PA12 (TIM1_ETR; no AFIO remap on F103).
-#   - DC and CS must be on PB pins so they ride along in the same
-#     `GPIOB->IDR` DMA read as the PB-half of the data bus.
-#   - 8 data bits must land on PA pins, 8 on PB pins; mixing across
-#     ports would require an extra cross-port merge on the host.
+#   - WR -> PA0 (TIM2_ETR / CH1_ETR; multiplexed on PA0, no remap needed).
 #
-# Everything else (which specific PA pin gets DB0, which PB pin gets
-# DC, etc.) is router's choice.
+# Everything else (which specific PA/PB pin gets which bus signal) is
+# router's choice.  This table matches the bench-rig (Blue Pill) routing
+# in firmware-stm32/README.md exactly, so the same permute_f103 table in
+# host/src/permute.rs covers both boards.
 CAPTURE_TAP = [
     # (STM32 pad #, flex net label)   STM32 pin   notes
-    # --- PA port (data-bus PA-half) -------------------------------------
-    (10, "DB12"),    # PA0
-    (11, "DB10"),    # PA1
-    (12, "DB8"),     # PA2
-    (13, "DB6"),     # PA3
-    (14, "DB4"),     # PA4
-    (15, "DB2"),     # PA5
-    (16, "DB0"),     # PA6
-    (17, "DB1"),     # PA7
-    # --- PA port (capture trigger, forced) ------------------------------
-    (33, "WR"),      # PA12       TIM1_ETR
-    # --- PB port (data-bus PB-half + control) ---------------------------
-    (18, "DB5"),     # PB0
-    (19, "DB9"),     # PB1
-    (21, "DB13"),     # PB10
-    (22, "DB3"),     # PB11
-    (25, "DB7"),    # PB12
-    (26, "DB11"),    # PB13
-    (27, "DB15"),    # PB14
+    # --- PA port (capture trigger + colour-refinement bits + CS) --------
+    (10, "WR"),      # PA0        TIM2_ETR
+    (11, "DB8"),     # PA1        G3
+    (12, "DB11"),    # PA2        R0
+    (13, "DB12"),    # PA3        R1
+    (14, "DB13"),    # PA4        R2
+    (15, "CS"),      # PA5        chip select (unused in decode)
+    # --- PB port (self-sufficient: DC + DB0-DB7 + R3/R4 + G4/G5) -------
+    (18, "DB14"),    # PB0        R3
+    (19, "DB15"),    # PB1        R4 (MSB)
+    (41, "DB0"),     # PB5
+    (42, "DB1"),     # PB6
+    (43, "DB2"),     # PB7
+    (45, "DB3"),     # PB8
+    (46, "DB4"),     # PB9
+    (21, "DB5"),     # PB10
+    (22, "DB6"),     # PB11
+    (25, "DB7"),     # PB12
+    (26, "DB9"),     # PB13       G4
+    (27, "DB10"),    # PB14       G5 (MSB)
     (28, "DC"),      # PB15       command/data framing line
-    (45, "DB14"),    # PB8
-    (46, "CS"),      # PB9        chip select
 ]
 for pad, label in CAPTURE_TAP:
     U1[pad] += flex_nets[label]
@@ -383,17 +380,16 @@ U1[2] += LED_STATUS
 
 # =============================================================================
 # Bring-up test points on STM32 free pins
-# PB3, PB4, PB5 are free GPIOs intended as scope-probe points during
-# bring-up. Note: on F103 PB3/PB4 default to JTAG (PB3=JTDO,
-# PB4=NJTRST); firmware must write `AFIO_MAPR.SWJ_CFG=010` early to
-# disable JTAG-DP and free them as plain GPIO (we use SWD only, not
-# JTAG). PB5 has no AF default to worry about.
+# PB3/PB4 default to JTAG (PB3=JTDO, PB4=NJTRST); firmware must write
+# `AFIO_MAPR.SWJ_CFG=010` early to disable JTAG-DP and free them as
+# plain GPIO (we use SWD only, not JTAG).  PA6 is free with no AF
+# conflicts in our configuration.
 # Bring-up serial console uses SWO via the SWD probe (Q14), not a
 # dedicated UART pad cluster.
 TEST_POINTS = [
     (39, "TP1", "TP_PB3"),   # JTDO — needs JTAG disabled
     (40, "TP2", "TP_PB4"),   # NJTRST — needs JTAG disabled
-    (41, "TP3", "TP_PB5"),
+    (16, "TP3", "TP_PA6"),   # free GPIO, no AF conflicts
 ]
 for pad_num, ref, tag in TEST_POINTS:
     tp = Part("Connector", "TestPoint",
