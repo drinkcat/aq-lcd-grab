@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/29/2026 09:55 PM")
+    (date "05/30/2026 09:45 AM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -297,7 +297,7 @@
         (field
           (name "SKiDL Tag") "D1_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:383"))
+          (name "SKiDL Line") "aq_lcd_grab.py:386"))
       (libsource
         (lib "Device")
         (part "LED"))
@@ -308,7 +308,7 @@
       (tstamps "efa0eb0f-b538-5fca-a0f8-87a726ee3741"))
     (comp
       (ref "J1")
-      (value "Conn_01x39_Socket")
+      (value "FH26W-39S-0.3SHW(60)")
       (description "Generic connector, single row, 01x39, script generated")
       (footprint "FH26W:FH26W39S03SHW60")
       (fields
@@ -332,7 +332,7 @@
       (tstamps "3081374e-8779-5a97-a2e6-6d3ed489d0ae"))
     (comp
       (ref "J2")
-      (value "Conn_01x39_Socket")
+      (value "FH26W-39S-0.3SHW(60)")
       (description "Generic connector, single row, 01x39, script generated")
       (footprint "FH26W:FH26W39S03SHW60")
       (fields
@@ -345,7 +345,7 @@
         (field
           (name "SKiDL Tag") "J2_FLEX_DISPLAY")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:144"))
+          (name "SKiDL Line") "aq_lcd_grab.py:145"))
       (libsource
         (lib "Connector")
         (part "Conn_01x39_Socket"))
@@ -369,7 +369,7 @@
         (field
           (name "SKiDL Tag") "J3_MAINBOARD_POWER")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:177"))
+          (name "SKiDL Line") "aq_lcd_grab.py:179"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Socket"))
@@ -393,7 +393,7 @@
         (field
           (name "SKiDL Tag") "J4_TARGET_5V_TAP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:204"))
+          (name "SKiDL Line") "aq_lcd_grab.py:206"))
       (libsource
         (lib "Connector")
         (part "Conn_01x02_Socket"))
@@ -417,7 +417,7 @@
         (field
           (name "SKiDL Tag") "J5_SWD_DEBUG")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:293"))
+          (name "SKiDL Line") "aq_lcd_grab.py:296"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Pin"))
@@ -681,7 +681,7 @@
         (field
           (name "SKiDL Tag") "TP_PA6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:405"))
+          (name "SKiDL Line") "aq_lcd_grab.py:408"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -705,7 +705,7 @@
         (field
           (name "SKiDL Tag") "TP_PA7")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:405"))
+          (name "SKiDL Line") "aq_lcd_grab.py:408"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -729,7 +729,7 @@
         (field
           (name "SKiDL Tag") "TP_PA8")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:405"))
+          (name "SKiDL Line") "aq_lcd_grab.py:408"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -740,7 +740,7 @@
       (tstamps "73e2d744-5e44-5fb7-b9d8-feadfcf04082"))
     (comp
       (ref "U1")
-      (value "STM32F103C8Tx")
+      (value "STM32F103C8T6")
       (description "STMicroelectronics Arm Cortex-M3 MCU, 64KB flash, 20KB RAM, 72 MHz, 2.0-3.6V, 37 GPIO, LQFP48")
       (footprint "Package_QFP:LQFP-48_7x7mm_P0.5mm")
       (fields
@@ -753,7 +753,7 @@
         (field
           (name "SKiDL Tag") "U1_STM32")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:221"))
+          (name "SKiDL Line") "aq_lcd_grab.py:223"))
       (libsource
         (lib "MCU_ST_STM32F1")
         (part "STM32F103C8Tx"))
@@ -777,7 +777,7 @@
         (field
           (name "SKiDL Tag") "U2_ESP32C6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:437"))
+          (name "SKiDL Line") "aq_lcd_grab.py:440"))
       (libsource
         (lib "Connector_Generic")
         (part "Conn_01x14"))

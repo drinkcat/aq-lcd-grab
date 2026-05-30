@@ -139,10 +139,12 @@ FLEX_PIN_LABELS = {
 # =============================================================================
 J1 = Part("Connector", "Conn_01x39_Socket",
           footprint="FH26W:FH26W39S03SHW60",
+          value="FH26W-39S-0.3SHW(60)",
           ref="J1",
           tag="J1_FLEX_MAIN")
 J2 = Part("Connector", "Conn_01x39_Socket",
           footprint="FH26W:FH26W39S03SHW60",
+          value="FH26W-39S-0.3SHW(60)",
           ref="J2",
           tag="J2_FLEX_DISPLAY")
 
@@ -220,6 +222,7 @@ J4[2] += GND
 # (must be held low at reset; cannot drive the LED).
 U1 = Part("MCU_ST_STM32F1", "STM32F103C8Tx",
           footprint="Package_QFP:LQFP-48_7x7mm_P0.5mm",
+          value="STM32F103C8T6",
           ref="U1",
           tag="U1_STM32")
 
