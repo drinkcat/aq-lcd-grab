@@ -491,32 +491,29 @@ exact part number** — if a cheaper part has the same pad layout
 (pitch, lead-out direction, height) we can swap parts without
 redesigning.
 
-Current BOM (parts that could move between basic and extended):
+Current BOM (SMD parts assembled by JLC; through-hole and modules are
+hand-soldered and have no assembly-library concern):
 
-| Part / value | Qty | Footprint | Concern |
-|---|---|---|---|
-| FH26W flex 39p 0.3 mm | 2 | custom | Originally extended-or-missing; check current status and Molex 502598 / JST equivalents |
-| STM32F103C8T6 | 1 | LQFP-48 | Basic last we checked; reconfirm |
-| 100 nF X7R | 7 | 0402 | Should be basic; verify |
-| 1 µF / 4.7 µF | 1+1 | 0402 | Basic for X5R/X7R at 6.3 V+; verify the exact rating |
-| 22 µF | 1 | 0805 | Likely basic at low voltage |
-| 100 µF | 1 | 1206 | Often extended in low-ESR variants; check basic alternatives or drop to 47 µF |
-| 1 kΩ / 10 kΩ resistors | 1+2 | 0402 | Should be basic |
-| Status LED | 1 | 0603 | **User-flagged: currently expensive.** Find a basic-library 0603 LED in any colour — colour doesn't matter, footprint does |
-| 1×3 pin header 2.54 mm | 2 | through-hole | Through-hole; JLC PCBA only assembles SMD by default — these are hand-soldered, so library status doesn't matter |
-| Xiao ESP32-C6 (module) | 1 | castellated | Module is hand-soldered, not assembled by JLC; library status N/A |
-| 0 Ω jumpers (Q18, Q19, possibly Q20) | TBD | 0402 | Basic; cheapest possible part — go for whichever is in stock |
+| Ref | Part / value | Qty | Footprint | JLCPCB status |
+|---|---|---|---|---|
+| J1, J2 | FH26W-39S-0.3SHW(60) flex | 2 | custom | TBD — check current status; Molex 502598 / JST equivalents if extended |
+| U1 | STM32F103C8T6 | 1 | LQFP-48 | Basic last checked; reconfirm |
+| C1–C5, C8 | 100 nF X7R | 6 | 0402 | Should be basic |
+| C6 | 1 µF X5R/X7R ≥6.3 V | 1 | 0402 | Should be basic |
+| C7 | 4.7 µF X5R/X7R ≥6.3 V | 1 | 0402 | Should be basic |
+| C10 | 22 µF ≥6.3 V | 1 | 0805 | Likely basic |
+| C11 | 100 µF ≥6.3 V | 1 | 1206 | Often extended; check basic alternative or drop to 47 µF |
+| R1, R2 | 10 kΩ | 2 | 0402 | Basic |
+| R3 | 1 kΩ | 1 | 0402 | Basic |
+| R10–R16 | 0 Ω jumper | 7 | 0402 | Basic; any in-stock part |
+| D1 | LED (any colour) | 1 | 0603 | **Check — previously expensive.** Any basic-library 0603 LED; colour irrelevant |
+| J3, J5 | 1×3 header 2.54 mm | 2 | through-hole | Hand-soldered; N/A |
+| J4 | 1×2 header 2.54 mm | 1 | through-hole | Hand-soldered; N/A |
+| U2 | Xiao ESP32-C6 module | 1 | castellated | Hand-soldered; N/A |
 
-Plus the upcoming additions from open questions:
-- Q18: 3× 0402 0 Ω for flex GND ties
-- Q19: 2× 0402 0 Ω for UART break jumpers
-- Q20: 1× 2-pin 2.54 mm header (through-hole, hand-soldered)
-- Q21: TBD passives for the PIC32 reset hold-low circuit (R + C + N-FET, all 0402-class if possible)
-
-Output: before BOM submission, fill a column with the JLCPCB part
-number + basic/extended status + unit price for every row. If the
-total extended-parts surcharge exceeds ~$5–10 per assembly run,
-revisit the choices.
+Before submission: confirm JLCPCB part number + basic/extended + unit
+price for each SMD row. If extended-parts surcharge exceeds ~$5–10 per
+run, swap the offending part for a basic-library equivalent.
 
 ### Q6. target 3V3 headroom
 
