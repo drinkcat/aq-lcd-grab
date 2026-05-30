@@ -505,7 +505,7 @@ hand-soldered and have no assembly-library concern):
 | C11 | 100 µF ≥6.3 V | 1 | 1206 | Often extended; check basic alternative or drop to 47 µF |
 | R1, R2 | 10 kΩ | 2 | 0402 | Basic |
 | R3 | 1 kΩ | 1 | 0402 | Basic |
-| R10–R16 | 0 Ω jumper | 7 | 0402 | Basic; any in-stock part |
+| R10–R18 | 0 Ω jumper | 9 | 0402 | Basic; any in-stock part |
 | D1 | LED (any colour) | 1 | 0603 | **Check — previously expensive.** Any basic-library 0603 LED; colour irrelevant |
 | J3, J5 | 1×3 header 2.54 mm | 2 | through-hole | Hand-soldered; N/A |
 | J4 | 1×2 header 2.54 mm | 1 | through-hole | Hand-soldered; N/A |

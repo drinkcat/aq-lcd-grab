@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/30/2026 09:45 AM")
+    (date "05/30/2026 09:51 AM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -619,6 +619,54 @@
       (component_classes)
       (tstamps "2a081d8b-0e6a-5b98-a094-16bca50b73d2"))
     (comp
+      (ref "R17")
+      (value "0")
+      (description "Resistor")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "Description") "Resistor")
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R_NRST_BREAK")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+      (libsource
+        (lib "Device")
+        (part "R"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "0f647a3b-181f-53bc-a737-6cf86efdc75d"))
+    (comp
+      (ref "R18")
+      (value "0")
+      (description "Resistor")
+      (footprint "Resistor_SMD:R_0402_1005Metric")
+      (fields
+        (field
+          (name "Description") "Resistor")
+        (field
+          (name "Footprint") "Resistor_SMD:R_0402_1005Metric")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "R_BOOT0_BREAK")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+      (libsource
+        (lib "Device")
+        (part "R"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "8170e245-e074-5fd0-9991-68f09304ee7c"))
+    (comp
       (ref "R2")
       (value "10k")
       (description "Resistor")
@@ -880,15 +928,27 @@
         (pin "1")
         (pintype "PASSIVE"))
       (node
+        (ref "R18")
+        (pin "2")
+        (pintype "PASSIVE"))
+      (node
         (ref "U1")
         (pin "44")
-        (pintype "INPUT"))
+        (pintype "INPUT")))
+    (net
+      (code 4)
+      (name "BOOT0_ESP")
+      (class "Default")
+      (node
+        (ref "R18")
+        (pin "1")
+        (pintype "PASSIVE"))
       (node
         (ref "U2")
         (pin "11")
         (pintype "PASSIVE")))
     (net
-      (code 4)
+      (code 5)
       (name "BOOT1")
       (class "Default")
       (node
@@ -900,7 +960,7 @@
         (pin "20")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 5)
+      (code 6)
       (name "CS")
       (class "Default")
       (node
@@ -916,7 +976,7 @@
         (pin "15")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 6)
+      (code 7)
       (name "DB0")
       (class "Default")
       (node
@@ -932,7 +992,7 @@
         (pin "41")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 7)
+      (code 8)
       (name "DB1")
       (class "Default")
       (node
@@ -948,7 +1008,7 @@
         (pin "42")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 8)
+      (code 9)
       (name "DB10")
       (class "Default")
       (node
@@ -964,7 +1024,7 @@
         (pin "27")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 9)
+      (code 10)
       (name "DB11")
       (class "Default")
       (node
@@ -980,7 +1040,7 @@
         (pin "12")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 10)
+      (code 11)
       (name "DB12")
       (class "Default")
       (node
@@ -996,7 +1056,7 @@
         (pin "13")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 11)
+      (code 12)
       (name "DB13")
       (class "Default")
       (node
@@ -1012,7 +1072,7 @@
         (pin "14")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 12)
+      (code 13)
       (name "DB14")
       (class "Default")
       (node
@@ -1028,7 +1088,7 @@
         (pin "18")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 13)
+      (code 14)
       (name "DB15")
       (class "Default")
       (node
@@ -1044,7 +1104,7 @@
         (pin "19")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 14)
+      (code 15)
       (name "DB2")
       (class "Default")
       (node
@@ -1060,7 +1120,7 @@
         (pin "43")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 15)
+      (code 16)
       (name "DB3")
       (class "Default")
       (node
@@ -1076,7 +1136,7 @@
         (pin "45")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 16)
+      (code 17)
       (name "DB4")
       (class "Default")
       (node
@@ -1092,7 +1152,7 @@
         (pin "46")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 17)
+      (code 18)
       (name "DB5")
       (class "Default")
       (node
@@ -1108,7 +1168,7 @@
         (pin "21")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 18)
+      (code 19)
       (name "DB6")
       (class "Default")
       (node
@@ -1124,7 +1184,7 @@
         (pin "22")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 19)
+      (code 20)
       (name "DB7")
       (class "Default")
       (node
@@ -1140,7 +1200,7 @@
         (pin "25")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 20)
+      (code 21)
       (name "DB8")
       (class "Default")
       (node
@@ -1156,7 +1216,7 @@
         (pin "11")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 21)
+      (code 22)
       (name "DB9")
       (class "Default")
       (node
@@ -1172,7 +1232,7 @@
         (pin "26")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 22)
+      (code 23)
       (name "DC")
       (class "Default")
       (node
@@ -1188,7 +1248,7 @@
         (pin "28")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 23)
+      (code 24)
       (name "GND")
       (class "Default")
       (node
@@ -1284,7 +1344,7 @@
         (pin "13")
         (pintype "PASSIVE")))
     (net
-      (code 24)
+      (code 25)
       (name "GND_1")
       (class "Default")
       (node
@@ -1300,7 +1360,7 @@
         (pin "1")
         (pintype "PASSIVE")))
     (net
-      (code 25)
+      (code 26)
       (name "GND_18")
       (class "Default")
       (node
@@ -1316,7 +1376,7 @@
         (pin "1")
         (pintype "PASSIVE")))
     (net
-      (code 26)
+      (code 27)
       (name "GND_19")
       (class "Default")
       (node
@@ -1332,7 +1392,7 @@
         (pin "1")
         (pintype "PASSIVE")))
     (net
-      (code 27)
+      (code 28)
       (name "LED_STATUS")
       (class "Default")
       (node
@@ -1344,7 +1404,7 @@
         (pin "2")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 28)
+      (code 29)
       (name "N$1")
       (class "Default")
       (node
@@ -1356,7 +1416,7 @@
         (pin "2")
         (pintype "PASSIVE")))
     (net
-      (code 29)
+      (code 30)
       (name "NRST")
       (class "Default")
       (node
@@ -1364,15 +1424,27 @@
         (pin "1")
         (pintype "PASSIVE"))
       (node
+        (ref "R17")
+        (pin "2")
+        (pintype "PASSIVE"))
+      (node
         (ref "U1")
         (pin "7")
-        (pintype "INPUT"))
+        (pintype "INPUT")))
+    (net
+      (code 31)
+      (name "NRST_ESP")
+      (class "Default")
+      (node
+        (ref "R17")
+        (pin "1")
+        (pintype "PASSIVE"))
       (node
         (ref "U2")
         (pin "9")
         (pintype "PASSIVE")))
     (net
-      (code 30)
+      (code 32)
       (name "P20_RD")
       (class "Default")
       (node
@@ -1384,7 +1456,7 @@
         (pin "20")
         (pintype "PASSIVE")))
     (net
-      (code 31)
+      (code 33)
       (name "P21")
       (class "Default")
       (node
@@ -1396,7 +1468,7 @@
         (pin "21")
         (pintype "PASSIVE")))
     (net
-      (code 32)
+      (code 34)
       (name "P25")
       (class "Default")
       (node
@@ -1408,7 +1480,7 @@
         (pin "25")
         (pintype "PASSIVE")))
     (net
-      (code 33)
+      (code 35)
       (name "P26")
       (class "Default")
       (node
@@ -1420,7 +1492,7 @@
         (pin "26")
         (pintype "PASSIVE")))
     (net
-      (code 34)
+      (code 36)
       (name "P27")
       (class "Default")
       (node
@@ -1432,7 +1504,7 @@
         (pin "27")
         (pintype "PASSIVE")))
     (net
-      (code 35)
+      (code 37)
       (name "P28")
       (class "Default")
       (node
@@ -1444,7 +1516,7 @@
         (pin "28")
         (pintype "PASSIVE")))
     (net
-      (code 36)
+      (code 38)
       (name "P29")
       (class "Default")
       (node
@@ -1456,7 +1528,7 @@
         (pin "29")
         (pintype "PASSIVE")))
     (net
-      (code 37)
+      (code 39)
       (name "P30")
       (class "Default")
       (node
@@ -1468,7 +1540,7 @@
         (pin "30")
         (pintype "PASSIVE")))
     (net
-      (code 38)
+      (code 40)
       (name "P31")
       (class "Default")
       (node
@@ -1480,7 +1552,7 @@
         (pin "31")
         (pintype "PASSIVE")))
     (net
-      (code 39)
+      (code 41)
       (name "P32")
       (class "Default")
       (node
@@ -1492,7 +1564,7 @@
         (pin "32")
         (pintype "PASSIVE")))
     (net
-      (code 40)
+      (code 42)
       (name "P34")
       (class "Default")
       (node
@@ -1504,7 +1576,7 @@
         (pin "34")
         (pintype "PASSIVE")))
     (net
-      (code 41)
+      (code 43)
       (name "P38")
       (class "Default")
       (node
@@ -1516,7 +1588,7 @@
         (pin "38")
         (pintype "PASSIVE")))
     (net
-      (code 42)
+      (code 44)
       (name "P39")
       (class "Default")
       (node
@@ -1528,7 +1600,7 @@
         (pin "39")
         (pintype "PASSIVE")))
     (net
-      (code 43)
+      (code 45)
       (name "PA6")
       (class "Default")
       (node
@@ -1540,7 +1612,7 @@
         (pin "16")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 44)
+      (code 46)
       (name "PA7")
       (class "Default")
       (node
@@ -1552,7 +1624,7 @@
         (pin "17")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 45)
+      (code 47)
       (name "PA8")
       (class "Default")
       (node
@@ -1564,7 +1636,7 @@
         (pin "29")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 46)
+      (code 48)
       (name "PIC32_RESET")
       (class "Default")
       (node
@@ -1580,7 +1652,7 @@
         (pin "2")
         (pintype "PASSIVE")))
     (net
-      (code 47)
+      (code 49)
       (name "PIC32_RST_ESP")
       (class "Default")
       (node
@@ -1592,7 +1664,7 @@
         (pin "10")
         (pintype "PASSIVE")))
     (net
-      (code 48)
+      (code 50)
       (name "PIC32_RST_STM")
       (class "Default")
       (node
@@ -1604,7 +1676,7 @@
         (pin "32")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 49)
+      (code 51)
       (name "SWCLK")
       (class "Default")
       (node
@@ -1616,7 +1688,7 @@
         (pin "37")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 50)
+      (code 52)
       (name "SWDIO")
       (class "Default")
       (node
@@ -1628,7 +1700,7 @@
         (pin "34")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 51)
+      (code 53)
       (name "UART_ESP_RX")
       (class "Default")
       (node
@@ -1640,7 +1712,7 @@
         (pin "8")
         (pintype "PASSIVE")))
     (net
-      (code 52)
+      (code 54)
       (name "UART_ESP_TX")
       (class "Default")
       (node
@@ -1652,7 +1724,7 @@
         (pin "7")
         (pintype "PASSIVE")))
     (net
-      (code 53)
+      (code 55)
       (name "UART_STM_RX")
       (class "Default")
       (node
@@ -1664,7 +1736,7 @@
         (pin "31")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 54)
+      (code 56)
       (name "UART_STM_TX")
       (class "Default")
       (node
@@ -1676,7 +1748,7 @@
         (pin "30")
         (pintype "BIDIRECTIONAL")))
     (net
-      (code 55)
+      (code 57)
       (name "VCC_33")
       (class "Default")
       (node
@@ -1688,7 +1760,7 @@
         (pin "33")
         (pintype "PASSIVE")))
     (net
-      (code 56)
+      (code 58)
       (name "VCC_35")
       (class "Default")
       (node
@@ -1700,7 +1772,7 @@
         (pin "35")
         (pintype "PASSIVE")))
     (net
-      (code 57)
+      (code 59)
       (name "VCC_36")
       (class "Default")
       (node
@@ -1712,7 +1784,7 @@
         (pin "36")
         (pintype "PASSIVE")))
     (net
-      (code 58)
+      (code 60)
       (name "VCC_37")
       (class "Default")
       (node
@@ -1724,7 +1796,7 @@
         (pin "37")
         (pintype "PASSIVE")))
     (net
-      (code 59)
+      (code 61)
       (name "WR")
       (class "Default")
       (node

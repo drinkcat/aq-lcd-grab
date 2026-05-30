@@ -451,10 +451,18 @@ U2[14] += P5V
 U2[7] += UART_ESP_TX    # ESP32 TX -> 0 Ω -> STM32 RX (PA10)
 U2[8] += UART_ESP_RX    # ESP32 RX <- 0 Ω <- STM32 TX (PA9)
 
-# Reset / boot control
-U2[9]  += NRST          # GPIO19 — open-drain (NRST has internal pull-up)
+# Reset / boot control — each line broken by a 0 Ω jumper so the ESP32
+# can be isolated during bring-up without cutting NRST/BOOT0 from the SWD
+# probe or other drivers.
+NRST_ESP  = Net("NRST_ESP")
+BOOT0_ESP = Net("BOOT0_ESP")
+R_NRST_BREAK  = R("0", "R17", "R_NRST_BREAK")
+R_NRST_BREAK[1]  += NRST_ESP;  R_NRST_BREAK[2]  += NRST
+R_BOOT0_BREAK = R("0", "R18", "R_BOOT0_BREAK")
+R_BOOT0_BREAK[1] += BOOT0_ESP; R_BOOT0_BREAK[2] += BOOT0
+U2[9]  += NRST_ESP   # GPIO19 — open-drain (NRST has internal pull-up)
 U2[10] += PIC32_RST_ESP  # GPIO20 — open-drain; target provides the pull-up
-U2[11] += BOOT0         # GPIO18 — push-pull, drive HIGH to enter bootloader
+U2[11] += BOOT0_ESP  # GPIO18 — push-pull, drive HIGH to enter bootloader
 
 # Bulk decoupling near Xiao 3V3 pad to absorb WiFi TX peaks locally so
 # the target 3V3 rail doesn't see them as transients (pcb_spec.md Q6/Q7).
