@@ -387,8 +387,8 @@ for pad, label in CAPTURE_TAP:
 # =============================================================================
 # Status LED on STM32 PC13 (pin 2)
 # =============================================================================
-# Matches the Blue/Black Pill dev-board pinout: same pin, same anode→
-# 1 kΩ→3V3 / cathode→GPIO active-low topology. So a firmware blink on
+# Matches the Blue/Black Pill dev-board pinout: same pin, same
+# 3V3→1 kΩ→anode / cathode→GPIO active-low topology. So a firmware blink on
 # PC13 lights both the dev-board LED and ours, no per-target #ifdef.
 #
 # PC13 is in the F103 backup domain (low-drive, 3 mA max sink/source,
@@ -402,8 +402,8 @@ D_LED = Part("Device", "LED",
              ref="D1",
              tag="D1_LED_STATUS")
 R_LED[1] += P3V3
-R_LED[2] += D_LED[1]      # anode
-D_LED[2] += LED_STATUS    # cathode -> PC13
+R_LED[2] += D_LED[2]      # anode (pin 2)
+D_LED[1] += LED_STATUS    # cathode (pin 1) -> PC13
 U1[2] += LED_STATUS
 
 
