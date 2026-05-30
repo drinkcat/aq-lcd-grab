@@ -48,6 +48,7 @@ prior RP2350 draft):
 """
 
 import os
+import subprocess
 
 # SKiDL needs to know where KiCad's symbol libraries live so it can resolve
 # stock symbols like Connector:Conn_01x39_Socket and MCU_ST_STM32F1:STM32F103C8Tx.
@@ -209,6 +210,18 @@ J4 = Part("Connector", "Conn_01x02_Socket",
           tag="J4_TARGET_5V_TAP")
 J4[1] += P5V
 J4[2] += GND
+
+
+# =============================================================================
+# Tooling holes — JLCPCB 1.152 mm spec. No net connections; place at
+# board corners before fab submission.
+# =============================================================================
+for _ref in ("H1", "H2", "H3", "H4"):
+    Part("Connector", "MountingHole",
+         footprint="MountingHole:ToolingHole_1.152mm",
+         value="ToolingHole",
+         ref=_ref,
+         tag=f"TOOLING_{_ref}")
 
 
 # =============================================================================
@@ -384,7 +397,7 @@ for pad, label in CAPTURE_TAP:
 LED_STATUS = Net("LED_STATUS")
 R_LED = R("1k", "R3", "R_LED_STATUS")
 D_LED = Part("Device", "LED",
-             value="GREEN",
+             value="KT-0603R",
              footprint="LED_SMD:LED_0603_1608Metric",
              ref="D1",
              tag="D1_LED_STATUS")
@@ -477,3 +490,12 @@ C_ESP_BULK_B[2] += GND
 
 
 generate_netlist(file_="aq_lcd_grab.net")
+
+# Print the silkscreen version label. Add this as a gr_text on F.SilkS
+# (or B.SilkS) in KiCad after importing the netlist.
+_hash = subprocess.check_output(
+    ["git", "describe", "--always", "--dirty", "--abbrev=6"],
+    cwd=os.path.dirname(os.path.abspath(__file__)),
+    text=True,
+).strip()
+print(f"\nSilkscreen label: v1-{_hash}")

@@ -2,7 +2,7 @@
   (version "D")
   (design
     (source "aq_lcd_grab.py")
-    (date "05/30/2026 09:51 AM")
+    (date "05/30/2026 10:02 AM")
     (tool "SKiDL (2.2.3)")
     (sheet
       (number 1)
@@ -57,7 +57,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_VBAT_PIN1")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -81,7 +81,7 @@
         (field
           (name "SKiDL Tag") "C_ESP32_BULK_22U")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -105,7 +105,7 @@
         (field
           (name "SKiDL Tag") "C_ESP32_BULK_100U")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -129,7 +129,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_VDD_PIN24")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -153,7 +153,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_VDD_PIN36")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -177,7 +177,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_VDD_PIN48")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -201,7 +201,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_VDDA_HF")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -225,7 +225,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_VDDA_LF")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -249,7 +249,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_3V3_BULK")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -273,7 +273,7 @@
         (field
           (name "SKiDL Tag") "C_STM32_NRST_FILTER")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:82"))
+          (name "SKiDL Line") "aq_lcd_grab.py:83"))
       (libsource
         (lib "Device")
         (part "C"))
@@ -284,7 +284,7 @@
       (tstamps "b99f90e8-045b-5f94-8281-a1541d6aabe2"))
     (comp
       (ref "D1")
-      (value "GREEN")
+      (value "KT-0603R")
       (description "Light emitting diode")
       (footprint "LED_SMD:LED_0603_1608Metric")
       (fields
@@ -297,7 +297,7 @@
         (field
           (name "SKiDL Tag") "D1_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:386"))
+          (name "SKiDL Line") "aq_lcd_grab.py:399"))
       (libsource
         (lib "Device")
         (part "LED"))
@@ -306,6 +306,102 @@
         (tstamps "/"))
       (component_classes)
       (tstamps "efa0eb0f-b538-5fca-a0f8-87a726ee3741"))
+    (comp
+      (ref "H1")
+      (value "ToolingHole")
+      (description "Mounting Hole without connection")
+      (footprint "MountingHole:ToolingHole_1.152mm")
+      (fields
+        (field
+          (name "Description") "Mounting Hole without connection")
+        (field
+          (name "Footprint") "MountingHole:ToolingHole_1.152mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "TOOLING_H1")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:220"))
+      (libsource
+        (lib "NO_LIB")
+        (part "MountingHole"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "49db8137-e540-5ebf-ac5b-511c3636d886"))
+    (comp
+      (ref "H2")
+      (value "ToolingHole")
+      (description "Mounting Hole without connection")
+      (footprint "MountingHole:ToolingHole_1.152mm")
+      (fields
+        (field
+          (name "Description") "Mounting Hole without connection")
+        (field
+          (name "Footprint") "MountingHole:ToolingHole_1.152mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "TOOLING_H2")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:220"))
+      (libsource
+        (lib "NO_LIB")
+        (part "MountingHole"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "86659140-41ca-5c9a-a41e-145e5bfe34c0"))
+    (comp
+      (ref "H3")
+      (value "ToolingHole")
+      (description "Mounting Hole without connection")
+      (footprint "MountingHole:ToolingHole_1.152mm")
+      (fields
+        (field
+          (name "Description") "Mounting Hole without connection")
+        (field
+          (name "Footprint") "MountingHole:ToolingHole_1.152mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "TOOLING_H3")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:220"))
+      (libsource
+        (lib "NO_LIB")
+        (part "MountingHole"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "4f35faa7-2a58-5dad-8d95-0dff159aaa75"))
+    (comp
+      (ref "H4")
+      (value "ToolingHole")
+      (description "Mounting Hole without connection")
+      (footprint "MountingHole:ToolingHole_1.152mm")
+      (fields
+        (field
+          (name "Description") "Mounting Hole without connection")
+        (field
+          (name "Footprint") "MountingHole:ToolingHole_1.152mm")
+        (field
+          (name "Datasheet"))
+        (field
+          (name "SKiDL Tag") "TOOLING_H4")
+        (field
+          (name "SKiDL Line") "aq_lcd_grab.py:220"))
+      (libsource
+        (lib "NO_LIB")
+        (part "MountingHole"))
+      (sheetpath
+        (names "/")
+        (tstamps "/"))
+      (component_classes)
+      (tstamps "dce4954c-7c29-538e-8d42-42a984a73c0c"))
     (comp
       (ref "J1")
       (value "FH26W-39S-0.3SHW(60)")
@@ -321,7 +417,7 @@
         (field
           (name "SKiDL Tag") "J1_FLEX_MAIN")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:140"))
+          (name "SKiDL Line") "aq_lcd_grab.py:141"))
       (libsource
         (lib "Connector")
         (part "Conn_01x39_Socket"))
@@ -345,7 +441,7 @@
         (field
           (name "SKiDL Tag") "J2_FLEX_DISPLAY")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:145"))
+          (name "SKiDL Line") "aq_lcd_grab.py:146"))
       (libsource
         (lib "Connector")
         (part "Conn_01x39_Socket"))
@@ -369,7 +465,7 @@
         (field
           (name "SKiDL Tag") "J3_MAINBOARD_POWER")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:179"))
+          (name "SKiDL Line") "aq_lcd_grab.py:180"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Socket"))
@@ -393,7 +489,7 @@
         (field
           (name "SKiDL Tag") "J4_TARGET_5V_TAP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:206"))
+          (name "SKiDL Line") "aq_lcd_grab.py:207"))
       (libsource
         (lib "Connector")
         (part "Conn_01x02_Socket"))
@@ -417,7 +513,7 @@
         (field
           (name "SKiDL Tag") "J5_SWD_DEBUG")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:296"))
+          (name "SKiDL Line") "aq_lcd_grab.py:309"))
       (libsource
         (lib "Connector")
         (part "Conn_01x03_Pin"))
@@ -441,7 +537,7 @@
         (field
           (name "SKiDL Tag") "R_BOOT0_PULLDOWN")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -465,7 +561,7 @@
         (field
           (name "SKiDL Tag") "R_FLEX_GND_1_TIE")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -489,7 +585,7 @@
         (field
           (name "SKiDL Tag") "R_FLEX_GND_18_TIE")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -513,7 +609,7 @@
         (field
           (name "SKiDL Tag") "R_FLEX_GND_19_TIE")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -537,7 +633,7 @@
         (field
           (name "SKiDL Tag") "R_UART_TX_BREAK")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -561,7 +657,7 @@
         (field
           (name "SKiDL Tag") "R_UART_RX_BREAK")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -585,7 +681,7 @@
         (field
           (name "SKiDL Tag") "R_PIC32_RST_ESP")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -609,7 +705,7 @@
         (field
           (name "SKiDL Tag") "R_PIC32_RST_STM")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -633,7 +729,7 @@
         (field
           (name "SKiDL Tag") "R_NRST_BREAK")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -657,7 +753,7 @@
         (field
           (name "SKiDL Tag") "R_BOOT0_BREAK")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -681,7 +777,7 @@
         (field
           (name "SKiDL Tag") "R_BOOT1_PULLDOWN")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -705,7 +801,7 @@
         (field
           (name "SKiDL Tag") "R_LED_STATUS")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:87"))
+          (name "SKiDL Line") "aq_lcd_grab.py:88"))
       (libsource
         (lib "Device")
         (part "R"))
@@ -729,7 +825,7 @@
         (field
           (name "SKiDL Tag") "TP_PA6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:408"))
+          (name "SKiDL Line") "aq_lcd_grab.py:421"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -753,7 +849,7 @@
         (field
           (name "SKiDL Tag") "TP_PA7")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:408"))
+          (name "SKiDL Line") "aq_lcd_grab.py:421"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -777,7 +873,7 @@
         (field
           (name "SKiDL Tag") "TP_PA8")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:408"))
+          (name "SKiDL Line") "aq_lcd_grab.py:421"))
       (libsource
         (lib "Connector")
         (part "TestPoint"))
@@ -801,7 +897,7 @@
         (field
           (name "SKiDL Tag") "U1_STM32")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:223"))
+          (name "SKiDL Line") "aq_lcd_grab.py:236"))
       (libsource
         (lib "MCU_ST_STM32F1")
         (part "STM32F103C8Tx"))
@@ -825,7 +921,7 @@
         (field
           (name "SKiDL Tag") "U2_ESP32C6")
         (field
-          (name "SKiDL Line") "aq_lcd_grab.py:440"))
+          (name "SKiDL Line") "aq_lcd_grab.py:453"))
       (libsource
         (lib "Connector_Generic")
         (part "Conn_01x14"))

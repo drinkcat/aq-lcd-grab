@@ -502,13 +502,15 @@ hand-soldered and have no assembly-library concern):
 | C6 | 1 µF X5R/X7R ≥6.3 V | 1 | 0402 | Should be basic |
 | C7 | 4.7 µF X5R/X7R ≥6.3 V | 1 | 0402 | Should be basic |
 | C10 | 22 µF ≥6.3 V | 1 | 0805 | Likely basic |
-| C11 | 100 µF ≥6.3 V | 1 | 1206 | Often extended; check basic alternative or drop to 47 µF |
+| C11 | 100 µF ≥6.3 V | 1 | 1206 | Verify basic-library status before submission |
 | R1, R2 | 10 kΩ | 2 | 0402 | Basic |
 | R3 | 1 kΩ | 1 | 0402 | Basic |
 | R10–R18 | 0 Ω jumper | 9 | 0402 | Basic; any in-stock part |
-| D1 | LED (any colour) | 1 | 0603 | **Check — previously expensive.** Any basic-library 0603 LED; colour irrelevant |
+| D1 | KT-0603R | 1 | 0603 | Verify basic-library status before submission |
 | J3, J5 | 1×3 header 2.54 mm | 2 | through-hole | Hand-soldered; N/A |
 | J4 | 1×2 header 2.54 mm | 1 | through-hole | Hand-soldered; N/A |
+| H1–H4 | Tooling hole | 4 | 1.152 mm | Exclude from BOM; place at board corners |
+| TP1–TP3 | Test point | 3 | 0.5×0.5 mm pad | Exclude from BOM |
 | U2 | Xiao ESP32-C6 module | 1 | castellated | Hand-soldered; N/A |
 
 Before submission: confirm JLCPCB part number + basic/extended + unit

@@ -56,6 +56,7 @@ aq_lcd_grab = SchLib(tool=SKIDL).add_parts(*[
         Part(**{ 'name':'Conn_01x02_Socket', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'Conn_01x02_Socket'}), 'ref_prefix':'J', 'fplist':[''], 'footprint':'Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical', 'keywords':'connector', 'description':'Generic connector, single row, 01x02, script generated', 'datasheet':'', 'pins':[
             Pin(num='1',name='Pin_1',func=pin_types.PASSIVE,unit=1),
             Pin(num='2',name='Pin_2',func=pin_types.PASSIVE,unit=1)], 'unit_defs':[] }),
+        Part(**{ 'name':'MountingHole', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'MountingHole'}), 'ref_prefix':'H', 'fplist':[''], 'footprint':'MountingHole:ToolingHole_1.152mm', 'keywords':'mounting hole', 'description':'Mounting Hole without connection', 'datasheet':'' }),
         Part(**{ 'name':'STM32F103C8Tx', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'STM32F103C8Tx'}), 'ref_prefix':'U', 'fplist':['Package_QFP:LQFP-48_7x7mm_P0.5mm', 'Package_QFP:LQFP-48_7x7mm_P0.5mm'], 'footprint':'Package_QFP:LQFP-48_7x7mm_P0.5mm', 'keywords':'Arm Cortex-M3 STM32F1 STM32F103', 'description':'STMicroelectronics Arm Cortex-M3 MCU, 64KB flash, 20KB RAM, 72 MHz, 2.0-3.6V, 37 GPIO, LQFP48', 'datasheet':'https://www.st.com/resource/en/datasheet/stm32f103c8.pdf', 'pins':[
             Pin(num='1',name='VBAT',func=pin_types.PWRIN,unit=1),
             Pin(num='2',name='PC13',func=pin_types.BIDIR,unit=1),
