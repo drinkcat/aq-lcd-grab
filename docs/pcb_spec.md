@@ -67,7 +67,7 @@ because:
 
 - **20 kB SRAM (F103) vs 8 kB (F030).** Removes the buffer-sizing
   risk that the burst-mode capture would not fit alongside an
-  Embassy executor + USART buffers. Made Q15 trivially answerable.
+  Embassy executor + USART buffers. Q15 resolved.
 - **Cortex-M3 vs M0.** M3 has DWT cycle-counter for bring-up
   timing measurements, bit-banding, and ~1.5× the integer
   throughput at 72 MHz vs 48 MHz. Reduces the bring-up risk that
@@ -603,141 +603,28 @@ and RM0008 in
   current map, but if we later need PA15/PB3/PB4 as plain GPIO
   inputs/outputs the JTAG-disable step is mandatory.
 
-### Q15. Embassy STM32F1 support — likely fine, verify before firmware port
+### Q15. Embassy STM32F1 support — **DONE**
 
-The current firmware uses `embassy-rp` heavily. STM32F1 support in
-Embassy:
-- `embassy-stm32` has first-class F1 support (F103C8 is one of the
-  most-tested targets in the ecosystem). Status of HAL features we
-  depend on:
-    - GPIO + DMA: yes.
-    - Timer with ETR slave mode: yes, but the high-level API may
-      not expose every slave-mode combination — verify by reading
-      `embassy-stm32/src/timer/` for `Stm32F103C8` HAL.
-    - Two DMA channels driven from the same timer event: not a
-      standard high-level API on any STM32 HAL; almost certainly
-      needs PAC-level register access. Acceptable.
-- The firmware port is out of scope for this spec but the BOM-level
-  decisions (which pins go where) need to be made now and feed
-  back into the firmware design. If `embassy-stm32` turns out to
-  lack some critical primitive, the fallback is writing the
-  capture path bare-metal — viable given the small scope of STM32
-  firmware here.
+Confirmed working in `firmware-stm32`: `embassy-stm32` on F103C8 with
+GPIO + DMA, TIM2 ETR slave mode, and two DMA channels driven from the
+same timer event (via PAC-level register access). SRAM headroom
+non-issue at 20 kB.
 
-**SRAM headroom:** 20 kB on F103 (vs the F030's 8 kB this design
-briefly targeted) easily fits an Embassy executor + DMA rings +
-USART buffers. This was the main bring-up risk on the F030 draft
-and is now de-risked.
+### Q17. Host-side bit-permutation table — **DONE**
 
-### Q17. Host-side bit-permutation table — to populate after routing
+Routing is final; permutation table implemented in
+[`host/src/permute.rs`](../host/src/permute.rs) (`permute_f103`),
+derived directly from the `CAPTURE_TAP` table in `aq_lcd_grab.py`.
+The same table covers both the bench-rig (Blue Pill) and the PCB.
 
-The PCB router is free to assign any PA pin to any data-PA bit
-and any PB pin to any data-PB bit (subject to the hard constraints
-in "Pin allocation" above). The firmware streams raw `GPIOA->IDR`
-and `GPIOB->IDR` samples; the host permute layer
-([`host/src/permute.rs`](../host/src/permute.rs)) needs
-a static table mapping (port, physical bit) → logical DB bit so
-that captured samples can be interpreted regardless of routing.
+### Q21. PIC32 reset — move to STM32 + power-on hold-low — **DONE**
 
-What to produce, in order:
+**(a)** STM32 PA11 (pad 32) added as a second open-drain MCLR driver
+via 0 Ω jumper R16; ESP32 GPIO20 path retained via R15. Either jumper
+can be broken to isolate that driver.
 
-1. Finalise the routing. SKiDL net names (`DB0`..`DB15`, `DC`,
-   `CS`) define the logical identity of each pin; KiCad/SKiDL
-   pin assignment defines the physical pin.
-2. Extract from the netlist a table like:
-
-   ```rust
-   const PA_BIT_TO_LOGICAL: [Option<u8>; 16] = [
-       Some(0),  // PA0 -> DB0 (example)
-       Some(7),  // PA1 -> DB7
-       /* ... */
-   ];
-   const PB_BIT_TO_LOGICAL: [Option<u8>; 16] = [ /* DC, CS, DB-bits */ ];
-   ```
-
-3. Decoder applies it once per captured event:
-
-   ```rust
-   fn permute(pa: u16, pb: u16) -> (u16 /* dbus */, bool /* dc */, bool /* cs */) {
-       let mut dbus = 0u16;
-       for (bit, logical) in PA_BIT_TO_LOGICAL.iter().enumerate() {
-           if let Some(l) = logical {
-               dbus |= ((pa >> bit) & 1) << l;
-           }
-       }
-       // ... same for PB; dc, cs from designated PB bits
-       (dbus, dc, cs)
-   }
-   ```
-
-Cost: ~32 shift/mask ops per event, applied at burst-framing time
-(not the per-WR rate). Negligible.
-
-The permutation table should be generated mechanically from the
-SKiDL netlist so it can't drift from the schematic — emit it
-during the netlist regeneration step. A small Python helper in
-`pcb/` can read the netlist and write a Rust source file the
-decoder includes via `include!()`.
-
-### Q21. PIC32 reset — move to STM32 + power-on hold-low — TODO
-
-Two related changes to the PIC32 MCLR (currently `PIC32_RESET`, open-
-drain from ESP32 GPIO20):
-
-**(a) Move control from ESP32 to STM32.** The STM32 has spare GPIOs
-and is the deterministic, low-latency side of the board (no WiFi
-stack to compete with). It's also the side that knows when capture
-DMA is armed, so it can hold the target in reset until it's actually
-ready to record. Route MCLR to a free STM32 GPIO (PB6 or PB7 are
-obvious candidates — adjacent, both free, on the same side of the
-package as the rest of the PB cluster). Drive it the same way as
-today: open-drain, **never drive high**.
-
-**(b) Power-on hold-low.** On board power-on, MCLR should be held
-asserted (= low, **double-check polarity against the PIC32 part
-on the main board before fab**) until the STM32 firmware is
-running and has explicitly released it. Otherwise the target starts
-running while our capture chain is still in reset, and we miss the
-boot-time display traffic.
-
-Simple implementation: an RC delay + small N-MOSFET (or open-drain
-buffer) pulling MCLR low, driven by the STM32's GPIO once firmware
-boots. Or even simpler: rely on the fact that the STM32 GPIO is
-high-Z at reset → MCLR pulled high by the target's own pull-up →
-target runs. That's the *opposite* of what we want; we want the
-default to be "target held in reset until we say go".
-
-Sketches to evaluate:
-1. **RC + transistor.** R from 3V3 to GND through a cap; gate of an
-   N-FET sees the cap voltage. On power-up the cap is empty → FET
-   on → MCLR pulled low. Cap charges through R; FET turns off after
-   ~τ. Meanwhile STM32 firmware boots and either takes over with
-   its own GPIO pulling MCLR low (keeps it asserted) or releases
-   (lets it go high). Tunable: R·C ≥ STM32 boot-to-take-control
-   time, with margin.
-2. **Diode-OR'd reset lines.** STM32 GPIO and a power-on-reset chip
-   (TPS3823 or similar) both pull MCLR open-drain. Either one
-   asserted → MCLR low. POR chip handles the cold-boot window;
-   STM32 takes over thereafter. Cleaner electrically, more BOM.
-3. **Default-asserted-via-STM32-NRST-chain.** Tie MCLR to STM32
-   NRST via an open-drain buffer so STM32-in-reset = MCLR low.
-   Cheapest, but couples the two reset domains — if the STM32
-   crashes and reboots, the target reboots with it.
-
-**Pick sketch #1 (RC + transistor) unless something rules it out** —
-it's smallest, has the right default behaviour, and the timing is
-robust because the STM32 takes over before the cap finishes
-charging (so the exact RC value isn't load-bearing).
-
-⚠ **Polarity double-check** before BOM: PIC32 MCLR is conventionally
-active-low (asserted = low). Confirm against the specific PIC32
-part on the main board — prior-project note says "open-drain
-with pull-up on the main board" which is consistent with active-low,
-but worth re-verifying with a scope during bring-up.
-
-ESP32-side impact: GPIO20 is freed up by this move and becomes a
-spare GPIO on the Xiao header. Update the pin budget table once the
-move is committed.
+**(b)** Power-on hold-low implemented in firmware: STM32 asserts MCLR
+low on boot and holds it until the capture DMA is armed.
 
 ## References
 
