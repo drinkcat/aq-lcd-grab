@@ -1,5 +1,6 @@
 mod bus_decoder;
 mod decoder;
+mod fnv;
 mod framebuffer;
 mod permute;
 mod wire;
@@ -315,7 +316,7 @@ fn reader_loop(
             );
         }
         if read == 0 {
-            // Idle pump: settle any glyph rows that have stopped updating.
+            // Idle: emit any dirty metric rows that have settled.
             for r in glyphs.flush() {
                 let msg = format!("= {}: {:?}", r.name, r.value);
                 println!("{msg}");
@@ -323,6 +324,32 @@ fn reader_loop(
                 g.values.insert(r.name, r.value);
             }
         }
+    }
+}
+
+/// Feed one permuted sample to both the bus decoder (display) and the
+/// glyph decoder (value extraction).
+fn feed_sample(
+    data: u16,
+    is_data: bool,
+    g: &mut Shared,
+    bus: &mut BusDecoder,
+    glyphs: &mut decoder::Decoder,
+    dump_dir: Option<&Path>,
+    seen: &mut HashSet<u64>,
+) {
+    if let Some(out) = glyphs.feed(data, is_data) {
+        if let Some(m) = out.glyph {
+            let msg = format!(
+                "→ {}x{}@({:03},{:03}) = {:?}",
+                m.w, m.h, m.disp_x, m.disp_y, m.label
+            );
+            println!("{msg}");
+            push_log(&mut g.log, LogEntry::Msg(msg));
+        }
+    }
+    if let Some(tx) = bus.feed(data, is_data) {
+        handle_frame(g, dump_dir, seen, tx);
     }
 }
 
@@ -356,9 +383,7 @@ fn dispatch_event(
             println!();
             for s in samples {
                 let (data, is_data) = board.permute(s);
-                if let Some(tx) = bus.feed(data, is_data) {
-                    handle_frame(g, glyphs, dump_dir, seen, tx);
-                }
+                feed_sample(data, is_data, g, bus, glyphs, dump_dir, seen);
             }
         }
         Event::Run { n, sample } => {
@@ -370,8 +395,21 @@ fn dispatch_event(
                 if is_data { 'D' } else { 'C' },
                 data
             );
+            // Glyph decoder: feed all n copies.
+            for _ in 0..n {
+                if let Some(out) = glyphs.feed(data, is_data) {
+                    if let Some(m) = out.glyph {
+                        let msg = format!(
+                            "→ {}x{}@({:03},{:03}) = {:?}",
+                            m.w, m.h, m.disp_x, m.disp_y, m.label
+                        );
+                        println!("{msg}");
+                        push_log(&mut g.log, LogEntry::Msg(msg));
+                    }
+                }
+            }
             if let Some(tx) = bus.feed_run(n as usize, data, is_data) {
-                handle_frame(g, glyphs, dump_dir, seen, tx);
+                handle_frame(g, dump_dir, seen, tx);
             }
         }
         Event::Repeat2 {
@@ -400,8 +438,21 @@ fn dispatch_event(
                 } else {
                     (data_b, is_data_b)
                 };
+                // Glyph decoder: feed all copies in this run.
+                for _ in 0..len {
+                    if let Some(out) = glyphs.feed(data, is_data) {
+                        if let Some(m) = out.glyph {
+                            let msg = format!(
+                                "→ {}x{}@({:03},{:03}) = {:?}",
+                                m.w, m.h, m.disp_x, m.disp_y, m.label
+                            );
+                            println!("{msg}");
+                            push_log(&mut g.log, LogEntry::Msg(msg));
+                        }
+                    }
+                }
                 if let Some(tx) = bus.feed_run(len as usize, data, is_data) {
-                    handle_frame(g, glyphs, dump_dir, seen, tx);
+                    handle_frame(g, dump_dir, seen, tx);
                 }
             }
         }
@@ -431,11 +482,10 @@ fn dispatch_event(
     }
 }
 
-/// Replays `frame` into the framebuffer + glyph decoder, dumps the
+/// Replays `frame` into the framebuffer (for egui display), dumps the
 /// resulting window if a dump dir is set, and pushes log lines.
 fn handle_frame(
     g: &mut Shared,
-    glyphs: &mut decoder::Decoder,
     dump_dir: Option<&Path>,
     seen: &mut HashSet<u64>,
     frame: Frame,
@@ -443,23 +493,6 @@ fn handle_frame(
     println!("{}", format_tx(&frame));
     let win = g.fb.apply(&frame);
     push_log(&mut g.log, LogEntry::Tx(frame));
-    if let Some(win) = win.as_ref() {
-        let out = glyphs.ingest(win);
-        if let Some(m) = out.glyph {
-            let msg = format!(
-                "→ {}x{}@({:03},{:03}) = {:?}",
-                m.w, m.h, m.disp_x, m.disp_y, m.label
-            );
-            println!("{msg}");
-            push_log(&mut g.log, LogEntry::Msg(msg));
-        }
-        for r in out.completed_rows {
-            let msg = format!("= {}: {:?}", r.name, r.value);
-            println!("{msg}");
-            push_log(&mut g.log, LogEntry::Msg(msg.clone()));
-            g.values.insert(r.name, r.value);
-        }
-    }
     if let (Some(dir), Some(win)) = (dump_dir, win) {
         dump_window(dir, &win, seen);
     }
@@ -551,7 +584,7 @@ fn dump_window(dir: &Path, win: &WindowWrite, seen: &mut HashSet<u64>) {
     win.w.hash(&mut hasher);
     win.h.hash(&mut hasher);
     for &m in &mask {
-        m.hash(&mut hasher);
+        <bool as Hash>::hash(&m, &mut hasher);
     }
     let key = hasher.finish();
     if !seen.insert(key) {

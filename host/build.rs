@@ -1,23 +1,29 @@
-//! Bake `templates/<W>x<H>/<label>.png` into a packed-bit table the
-//! decoder can match against without I/O at runtime.
+//! Bake `templates/<W>x<H>/<label>.png` into a hash table the decoder
+//! can match against at runtime.
 //!
-//! Each template PNG is the binarized output of the dumper: any non-black
-//! pixel is foreground. Output emitted to `$OUT_DIR/templates_gen.rs`:
+//! Each template PNG is binarized (any non-black pixel = foreground).
+//! The hash is FNV-1a 64-bit over the RLE run-length sequence of the
+//! binarized pixel stream, iterated in reverse (display orientation —
+//! same convention as the runtime accumulator in decoder.rs).
+//!
+//! Output emitted to `$OUT_DIR/templates_gen.rs`:
 //!
 //! ```ignore
-//! pub static TEMPLATES: &[Template] = &[
-//!     Template { w: 40, h: 61, label: '0', mask: &[..] },
-//!     ..
-//! ];
+//! pub struct Template { pub w: u16, pub h: u16, pub label: &'static str, pub hash: u64 }
+//! pub static TEMPLATES: &[Template] = &[ ... ];
 //! ```
+//!
+//! A compile-time assertion (via a generated `const` block) checks that
+//! no two templates of the same size share a hash.
 
 use std::path::{Path, PathBuf};
 
 fn main() {
     let dir = PathBuf::from("templates");
     println!("cargo:rerun-if-changed={}", dir.display());
+    println!("cargo:rerun-if-changed=src/fnv.rs");
 
-    let mut entries: Vec<(u16, u16, String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<(u16, u16, String, u64)> = Vec::new();
     let size_dirs = std::fs::read_dir(&dir).expect("templates/ missing");
     for entry in size_dirs {
         let entry = entry.expect("read templates entry");
@@ -45,21 +51,34 @@ fn main() {
                 .expect("utf8 stem")
                 .to_string();
             println!("cargo:rerun-if-changed={}", path.display());
-            let packed = pack_png(&path, w, h);
-            entries.push((w, h, stem, packed));
+            let hash = hash_png(&path, w, h);
+            entries.push((w, h, stem, hash));
         }
     }
 
     entries.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
 
+    // Verify no two templates of the same size share a hash.
+    for i in 0..entries.len() {
+        for j in (i + 1)..entries.len() {
+            let (wi, hi, li, hi_hash) = &entries[i];
+            let (wj, hj, lj, hj_hash) = &entries[j];
+            if wi == wj && hi == hj && hi_hash == hj_hash {
+                panic!(
+                    "hash collision: templates {li:?} and {lj:?} at {wi}x{hi} share hash {hi_hash:#018x}"
+                );
+            }
+        }
+    }
+
     let out_dir = std::env::var_os("OUT_DIR").expect("OUT_DIR");
     let out_path = Path::new(&out_dir).join("templates_gen.rs");
     let mut src = String::new();
-    src.push_str("pub struct Template { pub w: u16, pub h: u16, pub label: &'static str, pub mask: &'static [u8] }\n");
+    src.push_str("pub struct Template { pub w: u16, pub h: u16, pub label: &'static str, pub hash: u64 }\n");
     src.push_str("pub static TEMPLATES: &[Template] = &[\n");
-    for (w, h, label, packed) in &entries {
+    for (w, h, label, hash) in &entries {
         src.push_str(&format!(
-            "    Template {{ w: {w}, h: {h}, label: {label:?}, mask: &{packed:?} }},\n"
+            "    Template {{ w: {w}, h: {h}, label: {label:?}, hash: {hash:#018x} }},\n"
         ));
     }
     src.push_str("];\n");
@@ -71,7 +90,9 @@ fn parse_size(s: &str) -> Option<(u16, u16)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
-fn pack_png(path: &Path, expected_w: u16, expected_h: u16) -> Vec<u8> {
+include!("src/fnv.rs");
+
+fn hash_png(path: &Path, expected_w: u16, expected_h: u16) -> u64 {
     let img = image::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     let img = img.to_luma8();
     let (w, h) = (img.width() as u16, img.height() as u16);
@@ -81,12 +102,40 @@ fn pack_png(path: &Path, expected_w: u16, expected_h: u16) -> Vec<u8> {
         "{}: dim {w}x{h} != dir {expected_w}x{expected_h}",
         path.display()
     );
-    let n = w as usize * h as usize;
-    let mut out = vec![0u8; n.div_ceil(8)];
-    for (i, px) in img.pixels().enumerate() {
-        if px.0[0] != 0 {
-            out[i / 8] |= 1 << (i % 8);
+
+    // Binarize: non-black = foreground.
+    let pixels: Vec<bool> = img.pixels().map(|px| px.0[0] != 0).collect();
+
+    // Iterate in reverse (display orientation) and RLE-hash the run lengths.
+    // This must match PendingWindow::push() in decoder.rs exactly.
+    let n = pixels.len();
+    if n == 0 {
+        return FNV_OFFSET;
+    }
+
+    let mut hash = FNV_OFFSET;
+    // The first pixel in display order (= last in capture order) is always
+    // background (by definition: bg = first pixel the runtime sees, which
+    // is pixels[0] in capture order = pixels[n-1] in display order).
+    // The runtime sets bg on pixel_count==0, so the first run is always bg.
+    let bg = pixels[n - 1]; // first pixel in capture order = bg
+    let mut run_len: u16 = 0;
+    let mut run_is_fg = false; // first run is bg
+
+    // Walk in capture order (reverse of display order) to match runtime.
+    for &px in pixels.iter() {
+        let is_fg = px != bg;
+        if is_fg == run_is_fg {
+            run_len += 1;
+        } else {
+            hash = fnv_mix(hash, run_len as u8);
+            hash = fnv_mix(hash, (run_len >> 8) as u8);
+            run_len = 1;
+            run_is_fg = is_fg;
         }
     }
-    out
+    // Final run.
+    hash = fnv_mix(hash, run_len as u8);
+    hash = fnv_mix(hash, (run_len >> 8) as u8);
+    hash
 }

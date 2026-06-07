@@ -34,18 +34,23 @@ sensor values.
        │                                       │
        │                                       │ Frame { cmd, data }
        │                                       ▼
-       │                                  Framebuffer
-       │                                  (framebuffer.rs)
-       │                                  replays 8080
-       │                                  transactions
-       │                                       │
-       │                                       │ WindowWrite
-       │                                       ▼
-       │                                  Glyph decoder
-       │                                  (decoder.rs)
-       │                                       │
-       │                                       │ row values
-       │                                       ▼
+       │                          (data: u16, is_data: bool)
+       │                                    │
+       │                    ┌───────────────┴───────────────┐
+       │                    │                               │
+       │                    ▼                               ▼
+       │              BusDecoder                      Glyph decoder
+       │              (bus_decoder.rs)                (decoder.rs)
+       │              DC-edge framing                 own 8080 framing,
+       │                    │                         pixel runs,
+       │                    │ Frame                   template match
+       │                    ▼                               │
+       │              Framebuffer                           │ row values
+       │              (framebuffer.rs)                      │
+       │              (egui display)                        │
+       │                    │                               │
+       │                    └───────────────┬───────────────┘
+       │                                    ▼
        │                                  Shared{fb,log,values}
        │                                       │
        │                                       ▼
@@ -141,7 +146,7 @@ side* drop-free; we rely on USB CDC / UART pacing to keep the
 | [`permute.rs`](../host/src/permute.rs)       | Per-board `(pa, pb) → (data, dc, cs)` reorder.       |
 | [`bus_decoder.rs`](../host/src/bus_decoder.rs) | DC-edge 8080 bus framing → `Frame { cmd, data }`. |
 | [`framebuffer.rs`](../host/src/framebuffer.rs) | Replays 0x2A/0x2B/0x2C transactions into a 320×480 RGB565 buffer. Surfaces window-sized writes as glyph candidates. |
-| [`decoder.rs`](../host/src/decoder.rs)       | Matches glyph windows against baked-in templates, assembles per-row values (pm25, tvoc, co2, temp, humidity). |
+| [`decoder.rs`](../host/src/decoder.rs)       | Matches glyph windows against baked-in templates, assembles per-row values (pm25, tvoc, co2, temp, humidity). See [`decoder_design.md`](decoder_design.md). |
 | [`templates/`](../host/templates/)           | Source PNGs for the glyph templates; baked into the binary by `build.rs`. |
 
 ## CLI
