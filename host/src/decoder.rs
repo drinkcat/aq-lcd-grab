@@ -337,3 +337,157 @@ fn short_label(label: &str) -> char {
         other   => other.chars().next().unwrap_or('?'),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    include!(concat!(env!("OUT_DIR"), "/test_pixels_gen.rs"));
+
+    // Arbitrary RGB565 colours used in tests. bg/fg can be anything as long
+    // as they differ; the decoder only cares about equality to the first pixel.
+    const BG: u16 = 0x07E0; // green
+    const FG: u16 = 0xF800; // red
+
+    /// Build and feed the bus sequence for one glyph window:
+    ///   SET_COLUMN_ADDRESS(col_start, col_end)
+    ///   SET_ROW_ADDRESS(row_start, row_end)
+    ///   MEMORY_WRITE + pixels (from packed-bit mask, in capture order)
+    ///
+    /// `mask` is the TEST_MASK constant: bit i set → pixel i is foreground.
+    fn feed_glyph(
+        dec: &mut Decoder,
+        col_start: u16,
+        row_start: u16,
+        w: u16,
+        h: u16,
+        mask: &[u8],
+    ) -> Option<DecodeOut> {
+        // SET_COLUMN_ADDRESS (0x2A)
+        dec.feed(0x2A, false);
+        dec.feed((col_start >> 8) & 0xFF, true);
+        dec.feed(col_start & 0xFF, true);
+        let col_end = col_start + w - 1;
+        dec.feed((col_end >> 8) & 0xFF, true);
+        dec.feed(col_end & 0xFF, true);
+
+        // SET_ROW_ADDRESS (0x2B)
+        dec.feed(0x2B, false);
+        dec.feed((row_start >> 8) & 0xFF, true);
+        dec.feed(row_start & 0xFF, true);
+        let row_end = row_start + h - 1;
+        dec.feed((row_end >> 8) & 0xFF, true);
+        dec.feed(row_end & 0xFF, true);
+
+        // MEMORY_WRITE (0x2C) + pixels in capture order
+        dec.feed(0x2C, false);
+        let n = w as usize * h as usize;
+        let mut result = None;
+        for i in 0..n {
+            let fg = (mask[i / 8] >> (i % 8)) & 1 != 0;
+            let pixel = if fg { FG } else { BG };
+            let r = dec.feed(pixel, true);
+            if r.is_some() {
+                result = r;
+            }
+        }
+        result
+    }
+
+    // ---- Single-glyph tests ----
+
+    // col_start for a single 40×61 glyph placed so disp_x=86, disp_y=201
+    // (inside the tvoc region):
+    //   disp_x = WIDTH - col_start - w  →  col_start = WIDTH - disp_x - w
+    //                                                 = 320 - 86 - 40 = 194
+    //   disp_y = HEIGHT - row_start - h →  row_start = HEIGHT - disp_y - h
+    //                                                 = 480 - 201 - 61 = 218
+    const TVOC_COL: u16 = 194;
+    const TVOC_ROW: u16 = 218;
+
+    #[test]
+    fn decode_40x61_digit_0() {
+        let mut dec = Decoder::new();
+        let out = feed_glyph(&mut dec, TVOC_COL, TVOC_ROW, 40, 61, TEST_MASK_40X61_0).unwrap();
+        assert_eq!(out.glyph.unwrap().label, "0");
+    }
+
+    #[test]
+    fn decode_40x61_digit_1() {
+        let mut dec = Decoder::new();
+        let out = feed_glyph(&mut dec, TVOC_COL, TVOC_ROW, 40, 61, TEST_MASK_40X61_1).unwrap();
+        assert_eq!(out.glyph.unwrap().label, "1");
+    }
+
+    #[test]
+    fn decode_40x61_digit_5() {
+        let mut dec = Decoder::new();
+        let out = feed_glyph(&mut dec, TVOC_COL, TVOC_ROW, 40, 61, TEST_MASK_40X61_5).unwrap();
+        assert_eq!(out.glyph.unwrap().label, "5");
+    }
+
+    #[test]
+    fn decode_40x61_dot() {
+        let mut dec = Decoder::new();
+        // dot is 11×11; place it at the known dot position (disp_x=127, disp_y=251)
+        //   col_start = 320 - 127 - 11 = 182
+        //   row_start = 480 - 251 - 11 = 218
+        let out = feed_glyph(&mut dec, 182, 218, 11, 11, TEST_MASK_11X11_DOT).unwrap();
+        assert_eq!(out.glyph.unwrap().label, "dot");
+    }
+
+    #[test]
+    fn decode_40x61_blank() {
+        let mut dec = Decoder::new();
+        let out = feed_glyph(&mut dec, TVOC_COL, TVOC_ROW, 40, 61, TEST_MASK_40X61_BLANK).unwrap();
+        assert_eq!(out.glyph.unwrap().label, "blank");
+    }
+
+    #[test]
+    fn unmatched_glyph_returns_hash_placeholder() {
+        // Checkerboard pattern: alternating fg/bg bits, guaranteed not to
+        // match any real glyph template (which all have large solid regions).
+        let mut dec = Decoder::new();
+        let mask: Vec<u8> = (0..(40 * 61usize).div_ceil(8))
+            .map(|i| if i % 2 == 0 { 0xAA } else { 0x55 })
+            .collect();
+        let out = feed_glyph(&mut dec, TVOC_COL, TVOC_ROW, 40, 61, &mask).unwrap();
+        assert_eq!(out.glyph.unwrap().label, "#");
+    }
+
+    #[test]
+    fn window_outside_metric_region_is_ignored() {
+        // Place a valid glyph outside every RowDef — no DecodeOut should be returned.
+        let mut dec = Decoder::new();
+        // disp_x=0, disp_y=0 → col_start=280, row_start=419 — not in any row.
+        let out = feed_glyph(&mut dec, 280, 419, 40, 61, TEST_MASK_40X61_0);
+        assert!(out.map(|o| o.glyph.is_none()).unwrap_or(true));
+    }
+
+    // ---- TVOC full-row test: "0.8" ----
+    //
+    // TVOC shows two digits and a dot between them.
+    // We simulate "0.8" using three consecutive glyph writes.
+    //
+    // Observed display-space positions from replay:
+    //   left  digit "0":  disp_x=086 → col_start=194, row_start=218
+    //   dot   "dot":      disp_x=127 → col_start=182, row_start=218  (11×11)
+    //   right digit "8":  disp_x=185 → col_start=95,  row_start=218
+    //
+    // After the three glyphs, flush() should return the tvoc row as "0.8".
+    #[test]
+    fn tvoc_row_assembles_value_with_dot() {
+        let mut dec = Decoder::new();
+
+        // left digit: "0"
+        feed_glyph(&mut dec, 194, 218, 40, 61, TEST_MASK_40X61_0);
+        // dot
+        feed_glyph(&mut dec, 182, 218, 11, 11, TEST_MASK_11X11_DOT);
+        // right digit: "8"
+        feed_glyph(&mut dec, 95, 218, 40, 61, TEST_MASK_40X61_8);
+
+        let rows = dec.flush();
+        let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");
+        assert_eq!(tvoc.value, "0.8");
+    }
+}
