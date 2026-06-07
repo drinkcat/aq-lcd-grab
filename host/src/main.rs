@@ -1,6 +1,4 @@
 mod bus_decoder;
-mod decoder;
-mod fnv;
 mod framebuffer;
 mod permute;
 mod wire;

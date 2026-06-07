@@ -1,0 +1,13 @@
+[package]
+name = "aq-lcd-grab-decoder"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Glyph decoder for the display-bus capture: matches pixel windows against baked templates and assembles per-row sensor values."
+
+[lib]
+name = "decoder"
+path = "src/lib.rs"
+
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

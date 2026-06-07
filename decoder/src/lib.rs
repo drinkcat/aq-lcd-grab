@@ -16,10 +16,14 @@
 //! when it detects idleness (serial read timeout / drain-loop idle) to emit
 //! any dirty rows.
 
-use crate::framebuffer;
-use crate::fnv::{fnv_init, fnv_mix};
+mod fnv;
+use fnv::{fnv_init, fnv_mix};
 
 include!(concat!(env!("OUT_DIR"), "/templates_gen.rs"));
+
+// Display dimensions of the capture target panel.
+const WIDTH: u16 = 320;
+const HEIGHT: u16 = 480;
 
 /// One metric region on the display. A glyph belongs to this row if its
 /// display-space (x, y) top-left lands inside `[x_min, x_max) × [y_min, y_max)`.
@@ -285,8 +289,8 @@ impl Decoder {
         if !TEMPLATES.iter().any(|t| t.w == w && t.h == h) {
             return None;
         }
-        let disp_x = framebuffer::WIDTH.saturating_sub(self.col_start + w);
-        let disp_y = framebuffer::HEIGHT.saturating_sub(self.row_start + h);
+        let disp_x = WIDTH.saturating_sub(self.col_start + w);
+        let disp_y = HEIGHT.saturating_sub(self.row_start + h);
         if row_for(disp_x, disp_y).is_none() {
             return None;
         }
@@ -299,8 +303,8 @@ impl Decoder {
         let win = self.pending.as_ref()?;
         let w = win.w;
         let h = win.h;
-        let disp_x = framebuffer::WIDTH.saturating_sub(win.x + w);
-        let disp_y = framebuffer::HEIGHT.saturating_sub(win.y + h);
+        let disp_x = WIDTH.saturating_sub(win.x + w);
+        let disp_y = HEIGHT.saturating_sub(win.y + h);
 
         let label = TEMPLATES
             .iter()

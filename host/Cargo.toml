@@ -21,9 +21,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
-
-[build-dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
+decoder = { path = "../decoder", package = "aq-lcd-grab-decoder" }
 
 [profile.release]
 debug = true
