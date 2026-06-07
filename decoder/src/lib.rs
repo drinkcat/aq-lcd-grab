@@ -115,36 +115,57 @@ impl PendingWindow {
     }
 }
 
+/// One placed glyph: its display-space x extent `[x, x + w)` and label.
+#[derive(Copy, Clone)]
+struct Slot {
+    x: u16,
+    w: u16,
+    label: &'static str,
+}
+
 #[derive(Default)]
 struct RowState {
-    digits: [Option<(u16, &'static str)>; MAX_DIGITS_PER_ROW],
+    digits: [Option<Slot>; MAX_DIGITS_PER_ROW],
     n_digits: usize,
     dirty: bool,
 }
 
 impl RowState {
-    fn insert(&mut self, disp_x: u16, label: &'static str) {
-        // Find insertion point to keep digits sorted by x.
-        let pos = self.digits[..self.n_digits]
-            .iter()
-            .position(|s| s.unwrap().0 >= disp_x);
-        match pos {
-            Some(i) if self.digits[i].unwrap().0 == disp_x => {
-                self.digits[i] = Some((disp_x, label));
-            }
-            Some(i) => {
-                if self.n_digits < MAX_DIGITS_PER_ROW {
-                    self.digits[i..self.n_digits + 1].rotate_right(1);
-                    self.digits[i] = Some((disp_x, label));
-                    self.n_digits += 1;
+    /// Place a glyph occupying `[disp_x, disp_x + w)`. Any existing slot whose
+    /// x-extent overlaps the new glyph is removed first — when the value
+    /// changes, the new digits overwrite the same screen pixels as the old
+    /// ones, so overlap means "this slot is being redrawn." Non-overlapping
+    /// slots (e.g. the decimal dot, which sits in the gap between digits) are
+    /// left untouched. No frame resets, no flush coupling.
+    fn insert(&mut self, disp_x: u16, w: u16, label: &'static str) {
+        let new_hi = disp_x + w;
+
+        // Remove every existing slot that overlaps the new glyph's extent.
+        let mut i = 0;
+        while i < self.n_digits {
+            let s = self.digits[i].unwrap();
+            let overlaps = s.x < new_hi && disp_x < s.x + s.w;
+            if overlaps {
+                // Shift the tail left to fill the gap.
+                for j in i..self.n_digits - 1 {
+                    self.digits[j] = self.digits[j + 1];
                 }
+                self.n_digits -= 1;
+                self.digits[self.n_digits] = None;
+            } else {
+                i += 1;
             }
-            None => {
-                if self.n_digits < MAX_DIGITS_PER_ROW {
-                    self.digits[self.n_digits] = Some((disp_x, label));
-                    self.n_digits += 1;
-                }
-            }
+        }
+
+        // Insert the new slot, keeping the array sorted by x.
+        if self.n_digits < MAX_DIGITS_PER_ROW {
+            let pos = self.digits[..self.n_digits]
+                .iter()
+                .position(|s| s.unwrap().x >= disp_x)
+                .unwrap_or(self.n_digits);
+            self.digits[pos..self.n_digits + 1].rotate_right(1);
+            self.digits[pos] = Some(Slot { x: disp_x, w, label });
+            self.n_digits += 1;
         }
         self.dirty = true;
     }
@@ -269,9 +290,14 @@ impl Decoder {
             }
             let value: String = state.digits[..state.n_digits]
                 .iter()
-                .map(|s| short_label(s.unwrap().1))
+                .map(|s| short_label(s.unwrap().label))
                 .collect();
+            // Trim the spaces produced by `blank` leading-zero-erase glyphs.
+            let value = value.trim().to_string();
             out.push(RowReport { name: def.name, value });
+            // Slots are NOT cleared here: each new glyph removes only the
+            // slots it overlaps (see RowState::insert), so the row always
+            // reflects the latest on-screen value without frame resets.
             state.dirty = false;
         }
         out
@@ -313,7 +339,7 @@ impl Decoder {
             .unwrap_or("#");
 
         if let Some(idx) = row_for(disp_x, disp_y) {
-            self.rows[idx].insert(disp_x, label);
+            self.rows[idx].insert(disp_x, w, label);
         }
 
         Some(GlyphMatch { disp_x, disp_y, w, h, label })
@@ -489,6 +515,62 @@ mod tests {
         feed_glyph(&mut dec, 182, 218, 11, 11, TEST_MASK_11X11_DOT);
         // right digit: "8"
         feed_glyph(&mut dec, 95, 218, 40, 61, TEST_MASK_40X61_8);
+
+        let rows = dec.flush();
+        let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");
+        assert_eq!(tvoc.value, "0.8");
+    }
+
+    // ---- Value-change test: "0.09" → "3.3" (real capture layout) ----
+    //
+    // This is the case from reference/goodrun/run2.bin. Crucially there is NO
+    // idle flush between the two values (the bus stream is continuous), so the
+    // decoder must drop stale slots purely by overlap, not by frame reset.
+    //
+    // "0.09" digit extents (disp_x, w):
+    //   "0" @ 86  (col_start 194), dot @ 127 (col 182), "0" @ 140 (col 140),
+    //   "9" @ 185 (col 95)
+    // "3.3" digit extents:
+    //   "3" @ 131 (col 149), dot @ 172 (col 137), "3" @ 185 (col 95)
+    //
+    // "3"@131 [131..171] overlaps the old dot@127 [127..138] and old "0"@140
+    // [140..180]; the new dot@172 [172..183] overlaps nothing remaining;
+    // "3"@185 overlaps the old "9"@185. The old "0"@86 is erased by a blank
+    // glyph the firmware paints there. Net result must read "3.3".
+    #[test]
+    fn tvoc_value_change_drops_stale_by_overlap() {
+        let mut dec = Decoder::new();
+
+        // First value: "0.09" (no flush in between)
+        feed_glyph(&mut dec, 194, 218, 40, 61, TEST_MASK_40X61_0); // "0" @86
+        feed_glyph(&mut dec, 182, 218, 11, 11, TEST_MASK_11X11_DOT); // dot @127
+        feed_glyph(&mut dec, 140, 218, 40, 61, TEST_MASK_40X61_0); // "0" @140
+        feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_9); // "9" @185
+        assert_eq!(dec.flush().iter().find(|r| r.name == "tvoc").unwrap().value, "0.09");
+
+        // Second value: "3.3" — the firmware blanks the old "0"@86, places the
+        // integer "3"@131, dot@172, decimal "3"@185.
+        feed_glyph(&mut dec, 194, 218, 40, 61, TEST_MASK_40X61_BLANK); // erase @86
+        feed_glyph(&mut dec, 149, 218, 40, 61, TEST_MASK_40X61_3); // "3" @131
+        feed_glyph(&mut dec, 137, 218, 11, 11, TEST_MASK_11X11_DOT); // dot @172
+        feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_3); // "3" @185
+        let rows = dec.flush();
+        let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");
+        assert_eq!(tvoc.value, "3.3");
+    }
+
+    // The decimal dot sits in the gap between digits and must NOT be removed
+    // when an adjacent digit is redrawn in place (same x, same value refresh).
+    #[test]
+    fn dot_survives_adjacent_digit_redraw() {
+        let mut dec = Decoder::new();
+
+        feed_glyph(&mut dec, 194, 218, 40, 61, TEST_MASK_40X61_0); // "0" @86
+        feed_glyph(&mut dec, 182, 218, 11, 11, TEST_MASK_11X11_DOT); // dot @127
+        feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_8); // "8" @185
+
+        // Redraw the right digit in place (same extent) — dot must remain.
+        feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_8); // "8" @185 again
 
         let rows = dec.flush();
         let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");

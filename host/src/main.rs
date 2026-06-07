@@ -281,12 +281,7 @@ fn reader_loop(
             Ok(0) => {
                 // Flush any dirty rows before reporting EOF.
                 let mut g = shared.lock().unwrap();
-                for r in glyphs.flush() {
-                    let msg = format!("= {}: {:?}", r.name, r.value);
-                    println!("{msg}");
-                    push_log(&mut g.log, LogEntry::Msg(msg.clone()));
-                    g.values.insert(r.name, r.value);
-                }
+                emit_rows(&mut g, &mut glyphs);
                 bail!("stream EOF");
             }
             Ok(n) => n,
@@ -325,12 +320,7 @@ fn reader_loop(
         }
         if read == 0 {
             // Idle: emit any dirty metric rows that have settled.
-            for r in glyphs.flush() {
-                let msg = format!("= {}: {:?}", r.name, r.value);
-                println!("{msg}");
-                push_log(&mut g.log, LogEntry::Msg(msg.clone()));
-                g.values.insert(r.name, r.value);
-            }
+            emit_rows(&mut g, &mut glyphs);
         }
     }
 }
@@ -484,6 +474,11 @@ fn dispatch_event(
         Event::Log(text) => {
             println!("• {text}");
             push_log(&mut g.log, LogEntry::Msg(text));
+            // Firmware log lines land between display refreshes, so they make
+            // good flush points: emit whatever the rows currently hold. This
+            // keeps decoded values current during a continuous stream that
+            // never goes idle (e.g. replaying a capture file).
+            emit_rows(g, glyphs);
         }
         Event::Started => push_log(&mut g.log, LogEntry::Msg("STARTED".into())),
         Event::Stopped => push_log(&mut g.log, LogEntry::Msg("STOPPED".into())),
@@ -650,6 +645,17 @@ fn push_log(log: &mut std::collections::VecDeque<LogEntry>, entry: LogEntry) {
         log.pop_front();
     }
     log.push_back(entry);
+}
+
+/// Flush settled metric rows from the glyph decoder: print each, append to the
+/// activity log, and update the value map shown in the top panel.
+fn emit_rows(g: &mut Shared, glyphs: &mut decoder::Decoder) {
+    for r in glyphs.flush() {
+        let msg = format!("= {}: {:?}", r.name, r.value);
+        println!("{msg}");
+        push_log(&mut g.log, LogEntry::Msg(msg));
+        g.values.insert(r.name, r.value);
+    }
 }
 
 struct App {
