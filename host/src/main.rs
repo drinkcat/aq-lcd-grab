@@ -280,7 +280,17 @@ fn reader_loop(
 
     loop {
         let read = match reader.read(&mut buf) {
-            Ok(0) => bail!("stream EOF"),
+            Ok(0) => {
+                // Flush any dirty rows before reporting EOF.
+                let mut g = shared.lock().unwrap();
+                for r in glyphs.flush() {
+                    let msg = format!("= {}: {:?}", r.name, r.value);
+                    println!("{msg}");
+                    push_log(&mut g.log, LogEntry::Msg(msg.clone()));
+                    g.values.insert(r.name, r.value);
+                }
+                bail!("stream EOF");
+            }
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => 0,
             Err(e) => return Err(e.into()),

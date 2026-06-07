@@ -106,24 +106,22 @@ fn hash_png(path: &Path, expected_w: u16, expected_h: u16) -> u64 {
     // Binarize: non-black = foreground.
     let pixels: Vec<bool> = img.pixels().map(|px| px.0[0] != 0).collect();
 
-    // Iterate in reverse (display orientation) and RLE-hash the run lengths.
-    // This must match PendingWindow::push() in decoder.rs exactly.
-    let n = pixels.len();
-    if n == 0 {
+    if pixels.is_empty() {
         return FNV_OFFSET;
     }
 
-    let mut hash = FNV_OFFSET;
-    // The first pixel in display order (= last in capture order) is always
-    // background (by definition: bg = first pixel the runtime sees, which
-    // is pixels[0] in capture order = pixels[n-1] in display order).
-    // The runtime sets bg on pixel_count==0, so the first run is always bg.
-    let bg = pixels[n - 1]; // first pixel in capture order = bg
-    let mut run_len: u16 = 0;
-    let mut run_is_fg = false; // first run is bg
+    // Walk in capture order (= reverse of PNG image order; the panel is
+    // mounted upside-down so the dumper stores pixels in display orientation).
+    // This must match PendingWindow::push() in decoder.rs exactly.
+    // bg = first pixel seen in capture order = last pixel in image order.
+    let mut iter = pixels.iter().rev();
+    let bg = *iter.next().unwrap();
 
-    // Walk in capture order (reverse of display order) to match runtime.
-    for &px in pixels.iter() {
+    let mut hash = FNV_OFFSET;
+    let mut run_len: u16 = 1; // the bg pixel we just consumed
+    let mut run_is_fg = false; // first run is always bg
+
+    for &px in iter {
         let is_fg = px != bg;
         if is_fg == run_is_fg {
             run_len += 1;
