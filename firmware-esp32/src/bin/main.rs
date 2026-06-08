@@ -17,7 +17,7 @@
 //! MQTT tasks are added in subsequent steps.
 
 use aq_lcd_grab_esp32::pipeline::Pipeline;
-use aq_lcd_grab_esp32::{http, SharedFb, VALUES};
+use aq_lcd_grab_esp32::{http, LatestValues, SharedFb, VALUES};
 use wire::{HOST_CMD_START, HOST_CMD_STOP};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
@@ -84,6 +84,7 @@ async fn uart_task(
     uhci_rx: UhciRx<'static, Async>,
     mut uhci_tx: UhciTx<'static, Async>,
     fb: &'static SharedFb,
+    latest: &'static LatestValues,
 ) {
     let values_pub = VALUES.publisher().unwrap();
     let mut pipeline = Pipeline::new();
@@ -129,7 +130,7 @@ async fn uart_task(
             info!("uart: rx total={total} bytes");
             last_report = embassy_time::Instant::now();
         }
-        if let Err(e) = pipeline.feed(&scratch[..n], fb, &values_pub).await {
+        if let Err(e) = pipeline.feed(&scratch[..n], fb, &values_pub, latest).await {
             warn!("wire desync ({e:?})");
         }
     }
@@ -188,6 +189,12 @@ async fn main(spawner: Spawner) -> ! {
         let store = Palette4Store::new(bytes, DEFAULT_PALETTE);
         static FB: StaticCell<SharedFb> = StaticCell::new();
         FB.init(SharedFb::new(Framebuffer::new(store)))
+    };
+
+    // Latest decoded values, shared between the UART pipeline and HTTP /values.
+    let latest: &'static LatestValues = {
+        static LATEST: StaticCell<LatestValues> = StaticCell::new();
+        LATEST.init(LatestValues::new(Default::default()))
     };
 
     // Bridge UART (UART1) on GPIO17 (RX) / GPIO16 (TX), 921600 8N1.
@@ -249,7 +256,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(net_task(runner)).unwrap();
     // The decode pipeline runs independently of WiFi so capture works even
     // before the network is up.
-    spawner.spawn(uart_task(uhci_rx, uhci_tx, fb)).unwrap();
+    spawner.spawn(uart_task(uhci_rx, uhci_tx, fb, latest)).unwrap();
 
     stack.wait_config_up().await;
     if let Some(cfg) = stack.config_v4() {
@@ -258,7 +265,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Publish the framebuffer to the HTTP handlers, build the router + config
     // once, leak to 'static, and run a pool of identical workers.
-    http::set_fb(fb);
+    http::set_shared(fb, latest);
     use picoserve::AppWithStateBuilder as _;
     let app = picoserve::make_static!(http::AppRouter, http::AppProps.build_app());
     let http_config = picoserve::make_static!(picoserve::Config, http::config());

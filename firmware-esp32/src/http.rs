@@ -16,34 +16,60 @@ use picoserve::response::{Content, IntoResponse};
 use picoserve::routing::get;
 use picoserve::{AppWithStateBuilder, Config, Router, Timeouts};
 
-use crate::SharedFb;
+use crate::{LatestValues, SharedFb, ROW_NAMES};
 
 /// Number of concurrent connection-handler tasks. A browser fetches the page
 /// and image and may overlap refreshes, so a small pool keeps a listener free.
 pub const HTTP_WORKERS: usize = 2;
 
-/// The shared framebuffer, published once at startup via [`set_fb`].
+/// The shared framebuffer + latest values, published once at startup via
+/// [`set_shared`].
 static FB: AtomicPtr<SharedFb> = AtomicPtr::new(core::ptr::null_mut());
+static LATEST: AtomicPtr<LatestValues> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Publish the framebuffer handle for the HTTP handlers. Call once before
-/// spawning the workers.
-pub fn set_fb(fb: &'static SharedFb) {
+/// Publish the shared state for the HTTP handlers. Call once before spawning
+/// the workers.
+pub fn set_shared(fb: &'static SharedFb, latest: &'static LatestValues) {
     FB.store(fb as *const SharedFb as *mut SharedFb, Ordering::Release);
+    LATEST.store(
+        latest as *const LatestValues as *mut LatestValues,
+        Ordering::Release,
+    );
 }
 
 fn fb() -> &'static SharedFb {
     // Safe: the pointer is either null (handlers not yet serving) or a
-    // 'static reference published by set_fb before any worker is spawned.
+    // 'static reference published by set_shared before any worker is spawned.
     unsafe { FB.load(Ordering::Acquire).as_ref().expect("fb not set") }
 }
 
-// Self-pacing refresh: request the next frame only after the current one has
-// loaded (plus a short gap), so requests never stack up if the link is slow.
+fn latest() -> &'static LatestValues {
+    unsafe {
+        LATEST
+            .load(Ordering::Acquire)
+            .as_ref()
+            .expect("latest not set")
+    }
+}
+
+// Image self-paces (next frame only after onload + gap) so requests never
+// stack; the values panel polls /values once a second and renders the JSON.
 const INDEX_HTML: &str = "<!doctype html><meta charset=utf-8><title>aq-lcd</title>\
-<style>body{background:#111;margin:0;display:grid;place-items:center;height:100vh}\
-img{image-rendering:pixelated;height:96vh}</style>\
+<style>body{background:#111;color:#eee;margin:0;font:16px system-ui;\
+display:flex;gap:24px;align-items:center;justify-content:center;height:100vh}\
+img{image-rendering:pixelated;height:96vh}\
+#v{display:grid;grid-template-columns:auto auto;gap:6px 16px}\
+#v b{color:#8cf;font-weight:600}#v span{text-align:right;font-variant-numeric:tabular-nums}\
+.u{color:#888;font-size:12px}</style>\
 <img src=/fb.bmp id=i>\
-<script>i.onload=i.onerror=()=>setTimeout(()=>i.src='/fb.bmp?'+Date.now(),500)</script>";
+<div id=v>loading…</div>\
+<script>\
+const U={pm25:'µg/m³',tvoc:'ppm',co2:'ppm',temp:'°C',humidity:'%'};\
+i.onload=i.onerror=()=>setTimeout(()=>i.src='/fb.bmp?'+Date.now(),500);\
+async function vp(){try{const d=await(await fetch('/values?'+Date.now())).json();\
+v.innerHTML=Object.keys(U).map(k=>`<b>${k}</b><span>${d[k]||'–'} <i class=u>${U[k]}</i></span>`).join('')}\
+catch(e){}setTimeout(vp,1000)}vp();\
+</script>";
 
 /// A response that streams the framebuffer as a 24-bit BMP with a known length.
 struct BmpResponse;
@@ -105,6 +131,40 @@ async fn fb_bmp() -> impl IntoResponse {
     BmpResponse
 }
 
+/// `GET /values` → JSON of the latest decoded values, e.g.
+/// `{"pm25":"6","tvoc":"0.1","co2":"586","temp":"26","humidity":"55"}`.
+/// Built into a small heapless string (values are short).
+async fn values() -> impl IntoResponse {
+    use core::fmt::Write as _;
+    let g = latest().lock().await;
+    let mut json = heapless::String::<256>::new();
+    let _ = json.push('{');
+    for (i, name) in ROW_NAMES.iter().enumerate() {
+        if i > 0 {
+            let _ = json.push(',');
+        }
+        // Values are decoded digits/dot/space — JSON-safe without escaping.
+        let _ = write!(json, "\"{}\":\"{}\"", name, g[i].as_str());
+    }
+    let _ = json.push('}');
+    Json(json)
+}
+
+/// A heapless JSON string served with caller-set headers.
+struct Json(heapless::String<256>);
+
+impl Content for Json {
+    fn content_type(&self) -> &'static str {
+        "application/json"
+    }
+    fn content_length(&self) -> usize {
+        self.0.len()
+    }
+    async fn write_content<W: picoserve::io::Write>(self, mut writer: W) -> Result<(), W::Error> {
+        writer.write_all(self.0.as_bytes()).await
+    }
+}
+
 /// App props → router via picoserve's `AppWithStateBuilder`. State is `()`
 /// (the framebuffer comes from the module `static`), so the router type is
 /// nameable as `picoserve::AppRouter<AppProps>` for `static` storage.
@@ -118,6 +178,7 @@ impl AppWithStateBuilder for AppProps {
         Router::new()
             .route("/", get(index))
             .route("/fb.bmp", get(fb_bmp))
+            .route("/values", get(values))
     }
 }
 

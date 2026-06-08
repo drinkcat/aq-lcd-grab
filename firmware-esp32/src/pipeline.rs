@@ -49,6 +49,7 @@ impl Pipeline {
         bytes: &[u8],
         fb: &SharedFb,
         values_pub: &ValuesPub,
+        latest: &crate::LatestValues,
     ) -> Result<(), WireError> {
         // The wire decoder's callback can't be async, so we collect intent into
         // small flags and act after each `feed` returns. To keep the framebuffer
@@ -104,13 +105,20 @@ impl Pipeline {
         }
 
         if flush_requested {
+            // Collect flushed rows (the callback can't be async); then publish
+            // to MQTT and record into the latest-values snapshot.
+            let mut updates: heapless::Vec<RowUpdate, 8> = heapless::Vec::new();
             glyph.flush_each(|name, value| {
                 let mut v = heapless::String::<16>::new();
                 let _ = v.push_str(value);
                 info!("= {name}: {value}");
-                // Non-blocking publish; drop if the queue is full (MQTT is slow).
-                values_pub.publish_immediate(RowUpdate { name, value: v });
+                let _ = updates.push(RowUpdate { name, value: v });
             });
+            for u in &updates {
+                // Non-blocking publish; drop if the queue is full (MQTT is slow).
+                values_pub.publish_immediate(u.clone());
+                crate::record_value(latest, u.name, &u.value).await;
+            }
         }
 
         res
