@@ -1,7 +1,5 @@
 mod bus_decoder;
 mod framebuffer;
-mod permute;
-mod wire;
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -17,7 +15,7 @@ use bus_decoder::{BusDecoder, Frame};
 use clap::{Parser, ValueEnum};
 use eframe::egui;
 use framebuffer::{Framebuffer, WindowWrite};
-use wire::{Decoder as WireDecoder, Event, HOST_CMD_START, HOST_CMD_STOP};
+use wire::{Decoder as WireDecoder, HOST_CMD_START, HOST_CMD_STOP, WireEvent};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Board {
@@ -32,8 +30,8 @@ enum Board {
 impl Board {
     fn permute(self, sample: u32) -> (u16, bool) {
         match self {
-            Board::Pico => permute::permute_pico(sample),
-            Board::F103 => permute::permute_f103(sample),
+            Board::Pico => wire::permute_pico(sample),
+            Board::F103 => wire::permute_f103(sample),
         }
     }
 
@@ -297,26 +295,27 @@ fn reader_loop(
             // one read-timeout window behind real time, even if
             // the viewer is killed.
         }
-        let events = if read > 0 {
-            wire.feed(&buf[..read])?
-        } else {
-            if let Some(sink) = raw_sink.as_mut() {
-                sink.flush().ok();
-            }
-            Vec::new()
-        };
+        if read == 0
+            && let Some(sink) = raw_sink.as_mut()
+        {
+            sink.flush().ok();
+        }
 
         let mut g = shared.lock().unwrap();
-        for ev in events {
-            dispatch_event(
-                ev,
-                &mut g,
-                &mut bus,
-                &mut glyphs,
-                dump_dir.as_deref(),
-                &mut seen,
-                board,
-            );
+        if read > 0 {
+            wire
+                .feed(&buf[..read], |ev| {
+                    dispatch_event(
+                        ev,
+                        &mut g,
+                        &mut bus,
+                        &mut glyphs,
+                        dump_dir.as_deref(),
+                        &mut seen,
+                        board,
+                    );
+                })
+                .map_err(|e| anyhow::anyhow!("wire decode desync: {e:?}"))?;
         }
         if read == 0 {
             // Idle: emit any dirty metric rows that have settled.
@@ -354,7 +353,7 @@ fn feed_sample(
 /// Process one wire event: permute samples, feed the bus decoder,
 /// hand any completed 8080 transactions to `handle_frame`.
 fn dispatch_event(
-    ev: Event,
+    ev: WireEvent<'_>,
     g: &mut Shared,
     bus: &mut BusDecoder,
     glyphs: &mut decoder::Decoder,
@@ -363,9 +362,9 @@ fn dispatch_event(
     board: Board,
 ) {
     match ev {
-        Event::Block(samples) => {
+        WireEvent::Block(samples) => {
             print!("BLOCK n={:3}", samples.len());
-            for s in &samples {
+            for s in samples {
                 // Raw u32 sample alongside permuted view so we can see
                 // CS / noise bits that the data+is_data summary hides
                 // (helpful when the encoder fragments runs because of
@@ -379,12 +378,12 @@ fn dispatch_event(
                 );
             }
             println!();
-            for s in samples {
+            for &s in samples {
                 let (data, is_data) = board.permute(s);
                 feed_sample(data, is_data, g, bus, glyphs, dump_dir, seen);
             }
         }
-        Event::Run { n, sample } => {
+        WireEvent::Run { n, sample } => {
             let (data, is_data) = board.permute(sample);
             println!(
                 "RUN   n={:5} {:08x}({}:{:04x})",
@@ -410,7 +409,7 @@ fn dispatch_event(
                 handle_frame(g, dump_dir, seen, tx);
             }
         }
-        Event::Repeat2 {
+        WireEvent::Repeat2 {
             val_a,
             val_b,
             run_lens,
@@ -454,7 +453,7 @@ fn dispatch_event(
                 }
             }
         }
-        Event::Tick {
+        WireEvent::Tick {
             t_us,
             dt_us,
             n_drained,
@@ -466,22 +465,22 @@ fn dispatch_event(
                 t_us, dt_us, n_drained, n_pending, bytes_out,
             );
         }
-        Event::Overrun { dropped } => {
+        WireEvent::Overrun { dropped } => {
             let msg = format!("(firmware lost {dropped} WR edges)");
             println!("! {msg}");
             push_log(&mut g.log, LogEntry::Msg(msg));
         }
-        Event::Log(text) => {
+        WireEvent::Log(text) => {
             println!("• {text}");
-            push_log(&mut g.log, LogEntry::Msg(text));
+            push_log(&mut g.log, LogEntry::Msg(text.to_string()));
             // Firmware log lines land between display refreshes, so they make
             // good flush points: emit whatever the rows currently hold. This
             // keeps decoded values current during a continuous stream that
             // never goes idle (e.g. replaying a capture file).
             emit_rows(g, glyphs);
         }
-        Event::Started => push_log(&mut g.log, LogEntry::Msg("STARTED".into())),
-        Event::Stopped => push_log(&mut g.log, LogEntry::Msg("STOPPED".into())),
+        WireEvent::Started => push_log(&mut g.log, LogEntry::Msg("STARTED".into())),
+        WireEvent::Stopped => push_log(&mut g.log, LogEntry::Msg("STOPPED".into())),
     }
 }
 

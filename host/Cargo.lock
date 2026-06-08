@@ -124,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aq-lcd-grab-decoder",
+ "aq-lcd-grab-wire",
  "clap",
  "ctrlc",
  "eframe",
@@ -131,6 +132,10 @@ dependencies = [
  "image",
  "serialport",
 ]
+
+[[package]]
+name = "aq-lcd-grab-wire"
+version = "0.1.0"
 
 [[package]]
 name = "arboard"

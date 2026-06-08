@@ -22,6 +22,7 @@ clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 decoder = { path = "../decoder", package = "aq-lcd-grab-decoder" }
+wire = { path = "../wire", package = "aq-lcd-grab-wire" }
 
 [profile.release]
 debug = true

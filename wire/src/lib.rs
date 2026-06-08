@@ -11,13 +11,17 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod decoder;
 mod encoder;
+mod permute;
 mod sink;
 
+pub use decoder::{Decoder, WireError, WireEvent};
 pub use encoder::{
     Encoder, TAG_BLOCK, TAG_LOG, TAG_OVERRUN, TAG_REPEAT2, TAG_RUN, TAG_STARTED, TAG_STOPPED,
     TAG_TICK,
 };
+pub use permute::{permute_f103, permute_pico};
 pub use sink::Sink;
 
 // Host → board control commands (single bytes on the reverse channel).

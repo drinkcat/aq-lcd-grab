@@ -3,7 +3,7 @@
 //!
 //! Each capture board picks its own way to fan the 8080 bus across the
 //! MCU's GPIO ports — see `docs/pcb_spec.md` §Q17. The wire protocol
-//! ships the raw packed sample so the host can apply the right
+//! ships the raw packed sample so the consumer can apply the right
 //! permutation without the firmware having to know.
 //!
 //! Bit layout of `sample`: bits 0..15 = `GPIOA->IDR`, bits 16..31 =
