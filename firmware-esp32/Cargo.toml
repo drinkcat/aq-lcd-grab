@@ -26,7 +26,7 @@ esp-rtos = { version = "0.2.0", features = [
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c6", "log-04"] }
 log = "0.4.27"
 
-embassy-net = { version = "0.7.1", features = [
+embassy-net = { version = "0.9", features = [
   "dhcpv4",
   "dns",
   "log",
@@ -83,6 +83,7 @@ rust-mqtt = { version = "0.5.1", default-features = false, features = [
   "log",
   "v5",
 ], optional = true }
+picoserve = { version = "0.18", default-features = false, features = ["embassy"] }
 
 [features]
 default = ["bridge-stm32", "homeassistant"]
