@@ -119,11 +119,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aq-lcd-grab-framebuffer"
+version = "0.1.0"
+
+[[package]]
 name = "aq-lcd-grab-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aq-lcd-grab-decoder",
+ "aq-lcd-grab-framebuffer",
  "aq-lcd-grab-wire",
  "clap",
  "ctrlc",

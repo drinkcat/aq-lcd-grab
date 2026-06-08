@@ -1,5 +1,4 @@
 mod bus_decoder;
-mod framebuffer;
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -14,7 +13,7 @@ use anyhow::{Context, bail};
 use bus_decoder::{BusDecoder, Frame};
 use clap::{Parser, ValueEnum};
 use eframe::egui;
-use framebuffer::{Framebuffer, WindowWrite};
+use framebuffer::{Framebuffer, PixelStore, PIXELS};
 use wire::{Decoder as WireDecoder, HOST_CMD_START, HOST_CMD_STOP, WireEvent};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -120,8 +119,92 @@ fn cmd_name(cmd: u8) -> &'static str {
     }
 }
 
+/// Host pixel store: owns a full-fidelity RGB565 buffer. The embedded target
+/// uses `framebuffer::Palette4Store` over a `StaticCell` slice instead; the
+/// host keeps 16-bit colour for the egui display.
+struct HostStore {
+    pixels: Vec<u16>,
+}
+
+impl HostStore {
+    fn new() -> Self {
+        Self {
+            pixels: vec![0u16; PIXELS],
+        }
+    }
+}
+
+impl PixelStore for HostStore {
+    fn len(&self) -> usize {
+        self.pixels.len()
+    }
+    fn set(&mut self, idx: usize, rgb565: u16) {
+        self.pixels[idx] = rgb565;
+    }
+    fn get(&self, idx: usize) -> u16 {
+        self.pixels[idx]
+    }
+}
+
+/// A single MEMORY_WRITE that exactly fills the active window — a candidate
+/// glyph/sprite update worth dumping for offline analysis. Tracked host-side
+/// (the framebuffer crate no longer surfaces this; it's a viewer-only feature).
+struct WindowWrite {
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    pixels: Vec<u16>,
+}
+
+/// Host-side window tracker for the glyph-dump feature. Mirrors the panel's
+/// active-window state (0x2A/0x2B) so an exact-fill 0x2C can be captured.
+#[derive(Default)]
+struct WindowTracker {
+    col_start: u16,
+    col_end: u16,
+    row_start: u16,
+    row_end: u16,
+}
+
+impl WindowTracker {
+    /// Update from a frame; return a `WindowWrite` if this frame is a 0x2C that
+    /// exactly fills the active window.
+    fn observe(&mut self, frame: &Frame) -> Option<WindowWrite> {
+        match frame.cmd {
+            0x2A if frame.data.len() >= 4 => {
+                self.col_start = (frame.data[0] & 0xFF) << 8 | (frame.data[1] & 0xFF);
+                self.col_end = (frame.data[2] & 0xFF) << 8 | (frame.data[3] & 0xFF);
+                None
+            }
+            0x2B if frame.data.len() >= 4 => {
+                self.row_start = (frame.data[0] & 0xFF) << 8 | (frame.data[1] & 0xFF);
+                self.row_end = (frame.data[2] & 0xFF) << 8 | (frame.data[3] & 0xFF);
+                None
+            }
+            0x2C if self.col_end >= self.col_start && self.row_end >= self.row_start => {
+                let w = self.col_end - self.col_start + 1;
+                let h = self.row_end - self.row_start + 1;
+                if frame.data.len() == w as usize * h as usize {
+                    Some(WindowWrite {
+                        x: self.col_start,
+                        y: self.row_start,
+                        w,
+                        h,
+                        pixels: frame.data.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 struct Shared {
-    fb: Framebuffer,
+    fb: Framebuffer<HostStore>,
+    win_tracker: WindowTracker,
     log: std::collections::VecDeque<LogEntry>,
     /// Latest decoded value per named row (see decoder::ROWS). Updated
     /// from the reader thread; rendered in the top panel.
@@ -144,7 +227,8 @@ fn main() -> anyhow::Result<()> {
     ctrlc::set_handler(|| std::process::exit(0))?;
 
     let shared = Arc::new(Mutex::new(Shared {
-        fb: Framebuffer::new(),
+        fb: Framebuffer::new(HostStore::new()),
+        win_tracker: WindowTracker::default(),
         log: std::collections::VecDeque::with_capacity(LOG_CAP),
         values: std::collections::BTreeMap::new(),
     }));
@@ -493,7 +577,13 @@ fn handle_frame(
     frame: Frame,
 ) {
     println!("{}", format_tx(&frame));
-    let win = g.fb.apply(&frame);
+    // Replay the transaction into the framebuffer at the sample level: the
+    // command byte (is_data=false) then each data word (is_data=true).
+    g.fb.feed(frame.cmd as u16, false);
+    for &d in &frame.data {
+        g.fb.feed(d, true);
+    }
+    let win = g.win_tracker.observe(&frame);
     push_log(&mut g.log, LogEntry::Tx(frame));
     if let (Some(dir), Some(win)) = (dump_dir, win) {
         dump_window(dir, &win, seen);
@@ -677,8 +767,10 @@ impl eframe::App for App {
 
         let (rgba, w, h, log, values) = {
             let g = self.shared.lock().unwrap();
+            let mut rgba = vec![0u8; framebuffer::RGBA8_LEN];
+            framebuffer::write_rgba8(&g.fb, &mut rgba);
             (
-                g.fb.to_rgba8(),
+                rgba,
                 framebuffer::WIDTH as usize,
                 framebuffer::HEIGHT as usize,
                 g.log.iter().cloned().collect::<Vec<_>>(),

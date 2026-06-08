@@ -1,0 +1,10 @@
+[package]
+name = "aq-lcd-grab-framebuffer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Reconstruct the display-bus panel framebuffer from a (data, is_data) stream. no_std, allocation-free; pluggable RGB565 (host) or 4bpp-palette (embedded) pixel storage."
+
+[lib]
+name = "framebuffer"
+path = "src/lib.rs"
