@@ -1,4 +1,7 @@
 [toolchain]
-channel = "stable"
+# Nightly is required for picoserve: naming the router type for `static`
+# storage / embassy tasks needs #![feature(impl_trait_in_assoc_type)], which
+# is still unstable (stable rejects the feature attribute outright).
+channel = "nightly"
 components = ["rust-src"]
 targets = ["riscv32imac-unknown-none-elf"]

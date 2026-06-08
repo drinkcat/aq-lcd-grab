@@ -1,8 +1,10 @@
 #![no_std]
+#![feature(impl_trait_in_assoc_type)]
 
 //! Shared types for the ESP32-C6 gateway: the decode pipeline and the
 //! cross-task channels/state.
 
+pub mod http;
 pub mod pipeline;
 
 extern crate alloc;

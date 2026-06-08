@@ -236,7 +236,29 @@ impl<S: PixelStore> Framebuffer<S> {
 
 /// Total byte length of the 24-bit BMP produced by [`write_bmp`].
 pub const BMP_LEN: usize = BMP_HEADER_LEN + PIXELS * 3;
-const BMP_HEADER_LEN: usize = 54;
+/// Length of the BMP header (BITMAPFILEHEADER + BITMAPINFOHEADER).
+pub const BMP_HEADER_LEN: usize = 54;
+
+/// Fill `out[..BMP_HEADER_LEN]` with the 24-bit BMP header for this panel.
+/// Returns the header bytes. Useful for streaming the image: write the header,
+/// then stream pixel rows (see [`bmp_row_bgr`]) without buffering the whole BMP.
+pub fn bmp_header() -> [u8; BMP_HEADER_LEN] {
+    let row_bytes = WIDTH as usize * 3;
+    let pixel_data = row_bytes * HEIGHT as usize;
+    let file_len = BMP_HEADER_LEN + pixel_data;
+    let mut h = [0u8; BMP_HEADER_LEN];
+    h[0] = b'B';
+    h[1] = b'M';
+    h[2..6].copy_from_slice(&(file_len as u32).to_le_bytes());
+    h[10..14].copy_from_slice(&(BMP_HEADER_LEN as u32).to_le_bytes());
+    h[14..18].copy_from_slice(&40u32.to_le_bytes()); // info header size
+    h[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
+    h[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes()); // +height = bottom-up
+    h[26..28].copy_from_slice(&1u16.to_le_bytes()); // planes
+    h[28..30].copy_from_slice(&24u16.to_le_bytes()); // bpp
+    h[34..38].copy_from_slice(&(pixel_data as u32).to_le_bytes());
+    h
+}
 
 /// Write a 24-bit (BGR) bottom-up BMP of the framebuffer into `out`, applying
 /// the 180° rotation (panel is mounted upside-down). Returns the number of
@@ -247,41 +269,35 @@ const BMP_HEADER_LEN: usize = 54;
 /// per-row padding. Allocation-free.
 pub fn write_bmp<S: PixelStore>(fb: &Framebuffer<S>, out: &mut [u8]) -> usize {
     assert!(out.len() >= BMP_LEN, "bmp output buffer too small");
-    let row_bytes = WIDTH as usize * 3;
-    let pixel_data = row_bytes * HEIGHT as usize;
-    let file_len = BMP_HEADER_LEN + pixel_data;
-
-    // BITMAPFILEHEADER (14 bytes) + BITMAPINFOHEADER (40 bytes).
-    out[..BMP_HEADER_LEN].fill(0);
-    out[0] = b'B';
-    out[1] = b'M';
-    out[2..6].copy_from_slice(&(file_len as u32).to_le_bytes());
-    out[10..14].copy_from_slice(&(BMP_HEADER_LEN as u32).to_le_bytes());
-    out[14..18].copy_from_slice(&40u32.to_le_bytes()); // info header size
-    out[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
-    // Positive height = bottom-up rows. We emit rows bottom-to-top below.
-    out[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes());
-    out[26..28].copy_from_slice(&1u16.to_le_bytes()); // planes
-    out[28..30].copy_from_slice(&24u16.to_le_bytes()); // bpp
-    out[34..38].copy_from_slice(&(pixel_data as u32).to_le_bytes());
-
-    // Pixel data, bottom row first (BMP convention). To rotate the panel 180°,
-    // a BMP output row `r` (from the bottom) maps to source row `r` scanned in
-    // reverse column order — equivalently we iterate the framebuffer in reverse
-    // and lay pixels out left-to-right, bottom-up.
+    out[..BMP_HEADER_LEN].copy_from_slice(&bmp_header());
     let mut o = BMP_HEADER_LEN;
-    // BMP bottom-up row 0 is the visual bottom. After 180° rotation the visual
-    // bottom-left is the panel's top-right. Walk source pixels in full reverse
-    // order; that yields rows in the correct bottom-up + mirrored arrangement.
-    for src in (0..PIXELS).rev() {
-        let px = fb.store.get(src);
-        let (r, g, b) = rgb565_to_rgb888(px);
-        out[o] = b; // BMP is BGR
+    o += bmp_pixels_bgr(fb, 0, PIXELS, &mut out[BMP_HEADER_LEN..]);
+    o
+}
+
+/// Write the BGR pixel bytes for source-pixel range `[start, start + count)`
+/// into `out` (must hold `count * 3` bytes), in BMP order. Pixels are emitted
+/// in reverse source order to apply the 180° rotation and BMP's bottom-up
+/// convention in one pass, so streaming `start` from 0..PIXELS in chunks yields
+/// the full pixel-data section. Returns bytes written.
+pub fn bmp_pixels_bgr<S: PixelStore>(
+    fb: &Framebuffer<S>,
+    start: usize,
+    count: usize,
+    out: &mut [u8],
+) -> usize {
+    assert!(out.len() >= count * 3, "bmp pixel chunk too small");
+    let mut o = 0;
+    for i in start..start + count {
+        // Reverse-index into the framebuffer (rotate 180° + bottom-up).
+        let src = PIXELS - 1 - i;
+        let (r, g, b) = rgb565_to_rgb888(fb.store.get(src));
+        out[o] = b;
         out[o + 1] = g;
         out[o + 2] = r;
         o += 3;
     }
-    file_len
+    o
 }
 
 /// Length of the RGBA8 buffer produced by [`write_rgba8`].

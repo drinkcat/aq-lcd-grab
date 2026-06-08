@@ -17,7 +17,7 @@
 //! MQTT tasks are added in subsequent steps.
 
 use aq_lcd_grab_esp32::pipeline::Pipeline;
-use aq_lcd_grab_esp32::{SharedFb, VALUES};
+use aq_lcd_grab_esp32::{http, SharedFb, VALUES};
 use wire::{HOST_CMD_START, HOST_CMD_STOP};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
@@ -135,122 +135,23 @@ async fn uart_task(
     }
 }
 
-/// Number of concurrent HTTP connection handlers. A browser opens the page and
-/// the image on separate connections (and may pipeline refreshes), so a single
-/// listener leaves gaps where the next connect is refused. A small pool keeps a
-/// listener available.
-const HTTP_WORKERS: usize = 3;
-
-/// Serve the reconstructed panel framebuffer over HTTP on port 80.
-///
-/// Hand-rolled (no web framework): `GET /` returns a tiny auto-refreshing HTML
-/// page; `GET /fb.bmp` streams the framebuffer as a 24-bit BMP, generated on
-/// the fly in chunks so we never buffer the whole ~460 KiB image.
-#[embassy_executor::task(pool_size = HTTP_WORKERS)]
-async fn http_task(stack: embassy_net::Stack<'static>, fb: &'static SharedFb, worker: usize) {
-    use embassy_net::tcp::TcpSocket;
-    use static_cell::ConstStaticCell;
-
-    // Per-worker socket buffers.
-    static RX: [ConstStaticCell<[u8; 1024]>; HTTP_WORKERS] =
-        [const { ConstStaticCell::new([0; 1024]) }; HTTP_WORKERS];
-    static TX: [ConstStaticCell<[u8; 2048]>; HTTP_WORKERS] =
-        [const { ConstStaticCell::new([0; 2048]) }; HTTP_WORKERS];
-    let rx = RX[worker].take();
-    let tx = TX[worker].take();
-
-    loop {
-        let mut sock = TcpSocket::new(stack, rx, tx);
-        sock.set_timeout(Some(Duration::from_secs(10)));
-
-        if let Err(e) = sock.accept(80).await {
-            warn!("http accept failed: {e:?}");
-            Timer::after(Duration::from_millis(50)).await;
-            continue;
-        }
-
-        // Read the request line (we only care about the path). One read of the
-        // header is enough for a simple GET.
-        let mut req = [0u8; 256];
-        let n = sock.read(&mut req).await.unwrap_or(0);
-        let path = parse_get_path(&req[..n]);
-        info!("http: {} bytes, path={:?}", n, path.map(core::str::from_utf8));
-
-        match path {
-            Some(b"/fb.bmp") => serve_bmp(&mut sock, fb).await,
-            _ => serve_index(&mut sock).await,
-        }
-
-        // Half-close: flush, signal FIN, and wait for the peer to close (or the
-        // 10 s timeout) so all data is delivered before the socket is reused.
-        let _ = sock.flush().await;
-        sock.close();
-        let mut drain = [0u8; 64];
-        while let Ok(n) = sock.read(&mut drain).await {
-            if n == 0 {
-                break;
-            }
-        }
-    }
-}
-
-/// Extract the request-target from a `GET <path> HTTP/1.x` request line.
-fn parse_get_path(req: &[u8]) -> Option<&[u8]> {
-    let rest = req.strip_prefix(b"GET ")?;
-    let end = rest.iter().position(|&b| b == b' ')?;
-    Some(&rest[..end])
-}
-
-async fn serve_index(sock: &mut embassy_net::tcp::TcpSocket<'_>) {
-    const BODY: &[u8] = b"<!doctype html><meta charset=utf-8><title>aq-lcd</title>\
-<style>body{background:#111;margin:0;display:grid;place-items:center;height:100vh}\
-img{image-rendering:pixelated;height:96vh}</style>\
-<img src=/fb.bmp><script>setInterval(()=>{document.images[0].src='/fb.bmp?'+Date.now()},1000)</script>";
-    let _ = write_all(sock, b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n").await;
-    let _ = write_all(sock, BODY).await;
-    let _ = sock.flush().await;
-}
-
-async fn serve_bmp(sock: &mut embassy_net::tcp::TcpSocket<'_>, fb: &SharedFb) {
-    let _ = write_all(
-        sock,
-        b"HTTP/1.0 200 OK\r\nContent-Type: image/bmp\r\nConnection: close\r\n\r\n",
-    )
-    .await;
-
-    let fb = fb.lock().await;
-    let header = framebuffer::bmp_header();
-    if write_all(sock, &header).await.is_err() {
-        return;
-    }
-    // Stream pixel data in chunks; 256 pixels = 768 bytes per write.
-    const CHUNK_PX: usize = 256;
-    let mut chunk = [0u8; CHUNK_PX * 3];
-    let mut start = 0;
-    while start < framebuffer::PIXELS {
-        let count = CHUNK_PX.min(framebuffer::PIXELS - start);
-        let n = framebuffer::bmp_pixels_bgr(&fb, start, count, &mut chunk);
-        if write_all(sock, &chunk[..n]).await.is_err() {
-            return;
-        }
-        start += count;
-    }
-    let _ = sock.flush().await;
-}
-
-/// Write the whole buffer, looping over partial writes.
-async fn write_all(
-    sock: &mut embassy_net::tcp::TcpSocket<'_>,
-    mut buf: &[u8],
-) -> Result<(), embassy_net::tcp::Error> {
-    while !buf.is_empty() {
-        let n = sock.write(buf).await?;
-        if n == 0 {
-            return Err(embassy_net::tcp::Error::ConnectionReset);
-        }
-        buf = &buf[n..];
-    }
-    Ok(())
+/// One picoserve HTTP worker. Run several (HTTP_WORKERS) so a browser's
+/// overlapping connections (page + image + refreshes) each find a free
+/// listener; keep-alive lets each connection serve multiple requests.
+#[embassy_executor::task(pool_size = http::HTTP_WORKERS)]
+async fn http_task(
+    id: usize,
+    stack: embassy_net::Stack<'static>,
+    app: &'static http::AppRouter,
+    config: &'static picoserve::Config,
+) -> ! {
+    let mut rx = [0u8; 1024];
+    let mut tx = [0u8; 2048];
+    let mut http_buf = [0u8; 2048];
+    picoserve::Server::new(app, config, &mut http_buf)
+        .listen_and_serve(id, stack, 80, &mut rx, &mut tx)
+        .await
+        .into_never()
 }
 
 #[allow(
@@ -352,8 +253,14 @@ async fn main(spawner: Spawner) -> ! {
         info!("WiFi ready, IP: {} — http://{}/", cfg.address, cfg.address.address());
     }
 
-    for w in 0..HTTP_WORKERS {
-        spawner.spawn(http_task(stack, fb, w)).unwrap();
+    // Publish the framebuffer to the HTTP handlers, build the router + config
+    // once, leak to 'static, and run a pool of identical workers.
+    http::set_fb(fb);
+    use picoserve::AppWithStateBuilder as _;
+    let app = picoserve::make_static!(http::AppRouter, http::AppProps.build_app());
+    let http_config = picoserve::make_static!(picoserve::Config, http::config());
+    for w in 0..http::HTTP_WORKERS {
+        spawner.spawn(http_task(w, stack, app, http_config)).unwrap();
     }
 
     loop {
