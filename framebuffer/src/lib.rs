@@ -253,14 +253,18 @@ pub fn bmp_header() -> [u8; BMP_HEADER_LEN] {
     h[10..14].copy_from_slice(&(BMP_HEADER_LEN as u32).to_le_bytes());
     h[14..18].copy_from_slice(&40u32.to_le_bytes()); // info header size
     h[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
-    h[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes()); // +height = bottom-up
+    // Negative height = top-down rows (row 0 is the visual top). We emit pixels
+    // in fully-reversed framebuffer order (the 180° rotation for the
+    // upside-down mount), same order as `to_rgba8`; top-down then renders that
+    // upright. Positive height would re-flip it (bottom-up) → upside down.
+    h[22..26].copy_from_slice(&(-(HEIGHT as i32)).to_le_bytes());
     h[26..28].copy_from_slice(&1u16.to_le_bytes()); // planes
     h[28..30].copy_from_slice(&24u16.to_le_bytes()); // bpp
     h[34..38].copy_from_slice(&(pixel_data as u32).to_le_bytes());
     h
 }
 
-/// Write a 24-bit (BGR) bottom-up BMP of the framebuffer into `out`, applying
+/// Write a 24-bit (BGR) top-down BMP of the framebuffer into `out`, applying
 /// the 180° rotation (panel is mounted upside-down). Returns the number of
 /// bytes written (always [`BMP_LEN`]). `out` must be at least [`BMP_LEN`].
 ///
@@ -277,9 +281,10 @@ pub fn write_bmp<S: PixelStore>(fb: &Framebuffer<S>, out: &mut [u8]) -> usize {
 
 /// Write the BGR pixel bytes for source-pixel range `[start, start + count)`
 /// into `out` (must hold `count * 3` bytes), in BMP order. Pixels are emitted
-/// in reverse source order to apply the 180° rotation and BMP's bottom-up
-/// convention in one pass, so streaming `start` from 0..PIXELS in chunks yields
-/// the full pixel-data section. Returns bytes written.
+/// in fully-reversed source order (the 180° rotation for the upside-down mount);
+/// paired with the top-down (negative-height) header this renders upright.
+/// Streaming `start` from 0..PIXELS in chunks yields the full pixel-data
+/// section. Returns bytes written.
 pub fn bmp_pixels_bgr<S: PixelStore>(
     fb: &Framebuffer<S>,
     start: usize,
@@ -289,13 +294,78 @@ pub fn bmp_pixels_bgr<S: PixelStore>(
     assert!(out.len() >= count * 3, "bmp pixel chunk too small");
     let mut o = 0;
     for i in start..start + count {
-        // Reverse-index into the framebuffer (rotate 180° + bottom-up).
+        // Reverse-index into the framebuffer (180° rotation for the mount).
         let src = PIXELS - 1 - i;
         let (r, g, b) = rgb565_to_rgb888(fb.store.get(src));
         out[o] = b;
         out[o + 1] = g;
         out[o + 2] = r;
         o += 3;
+    }
+    o
+}
+
+// ---- 4bpp palettized BMP export ----
+//
+// The panel uses ≤16 colours, so a 4-bit indexed BMP is ~6× smaller than the
+// 24-bit form (76 800 B of pixels + a tiny colour table vs 460 800 B) — a big
+// win over WiFi. The framebuffer already stores 4bpp palette indices, so this
+// is close to a memcpy.
+
+use palette::PALETTE_LEN;
+
+/// 4bpp BMP header length: file header (14) + info header (40) + 16-entry
+/// colour table (16 × 4 BGRA bytes).
+pub const BMP4_HEADER_LEN: usize = 14 + 40 + PALETTE_LEN * 4;
+/// 4bpp BMP pixel-data length: WIDTH/2 bytes per row (320/2 = 160, already a
+/// multiple of 4 so no row padding) × HEIGHT.
+pub const BMP4_PIXELS_LEN: usize = (WIDTH as usize / 2) * HEIGHT as usize;
+/// Total 4bpp BMP length.
+pub const BMP4_LEN: usize = BMP4_HEADER_LEN + BMP4_PIXELS_LEN;
+
+/// Fill `out[..BMP4_HEADER_LEN]` with a 4bpp BMP header + colour table for the
+/// given palette. Top-down (negative height) so reversed pixel order renders
+/// upright. Returns the header bytes.
+pub fn bmp4_header(palette: &Palette) -> [u8; BMP4_HEADER_LEN] {
+    let mut h = [0u8; BMP4_HEADER_LEN];
+    h[0] = b'B';
+    h[1] = b'M';
+    h[2..6].copy_from_slice(&(BMP4_LEN as u32).to_le_bytes());
+    h[10..14].copy_from_slice(&(BMP4_HEADER_LEN as u32).to_le_bytes());
+    h[14..18].copy_from_slice(&40u32.to_le_bytes()); // info header size
+    h[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
+    h[22..26].copy_from_slice(&(-(HEIGHT as i32)).to_le_bytes()); // top-down
+    h[26..28].copy_from_slice(&1u16.to_le_bytes()); // planes
+    h[28..30].copy_from_slice(&4u16.to_le_bytes()); // bpp
+    h[34..38].copy_from_slice(&(BMP4_PIXELS_LEN as u32).to_le_bytes());
+    h[46..50].copy_from_slice(&(PALETTE_LEN as u32).to_le_bytes()); // biClrUsed
+    // Colour table: BGRA per entry.
+    for (i, &c) in palette.colors.iter().enumerate() {
+        let (r, g, b) = rgb565_to_rgb888(c);
+        let o = 54 + i * 4;
+        h[o] = b;
+        h[o + 1] = g;
+        h[o + 2] = r;
+        h[o + 3] = 0;
+    }
+    h
+}
+
+/// Write 4bpp pixel bytes for output-pixel range `[start, start + count)` into
+/// `out` (≥ `count / 2` bytes; `start`/`count` must be even). Pixels are emitted
+/// in fully-reversed framebuffer order (180° rotation); with the top-down header
+/// this renders upright. The high nibble is the left (lower-index) pixel, per
+/// the BMP 4bpp convention. Returns bytes written.
+pub fn bmp4_pixels(store: &Palette4Store<'_>, start: usize, count: usize, out: &mut [u8]) -> usize {
+    debug_assert!(start % 2 == 0 && count % 2 == 0);
+    let mut o = 0;
+    let mut i = start;
+    while i < start + count {
+        let hi = store.index_at(PIXELS - 1 - i);
+        let lo = store.index_at(PIXELS - 1 - (i + 1));
+        out[o] = (hi << 4) | (lo & 0x0F);
+        o += 1;
+        i += 2;
     }
     o
 }
@@ -357,6 +427,34 @@ mod tests {
         param(fb, rs & 0xFF);
         param(fb, re >> 8);
         param(fb, re & 0xFF);
+    }
+
+    #[test]
+    fn bmp4_header_and_pixels_are_consistent() {
+        let mut bytes = vec![0u8; PIXELS / 2];
+        let mut store = Palette4Store::new(&mut bytes, DEFAULT_PALETTE);
+        // Put a known colour at the very first framebuffer pixel (index 0) and a
+        // different one at the last (index PIXELS-1).
+        store.set(0, 0xf800); // red → palette index 4
+        store.set(PIXELS - 1, 0x07e0); // green → palette index 1
+
+        let header = bmp4_header(&store.palette);
+        assert_eq!(&header[0..2], b"BM");
+        assert_eq!(u16::from_le_bytes([header[28], header[29]]), 4); // 4 bpp
+        assert_eq!(
+            i32::from_le_bytes([header[22], header[23], header[24], header[25]]),
+            -(HEIGHT as i32) // top-down
+        );
+        assert_eq!(header.len() + BMP4_PIXELS_LEN, BMP4_LEN);
+
+        // First output pixel is reversed → framebuffer index PIXELS-1 (green=1);
+        // it lands in the high nibble of the first byte.
+        let mut px = vec![0u8; BMP4_PIXELS_LEN];
+        let n = bmp4_pixels(&store, 0, PIXELS, &mut px);
+        assert_eq!(n, BMP4_PIXELS_LEN);
+        assert_eq!(px[0] >> 4, 1, "first output pixel should be green (idx 1)");
+        // Last output pixel is framebuffer index 0 (red=4) → low nibble of last byte.
+        assert_eq!(px[BMP4_PIXELS_LEN - 1] & 0x0F, 4, "last output pixel should be red (idx 4)");
     }
 
     #[test]

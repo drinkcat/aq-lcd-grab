@@ -37,11 +37,13 @@ fn fb() -> &'static SharedFb {
     unsafe { FB.load(Ordering::Acquire).as_ref().expect("fb not set") }
 }
 
+// Self-pacing refresh: request the next frame only after the current one has
+// loaded (plus a short gap), so requests never stack up if the link is slow.
 const INDEX_HTML: &str = "<!doctype html><meta charset=utf-8><title>aq-lcd</title>\
 <style>body{background:#111;margin:0;display:grid;place-items:center;height:100vh}\
 img{image-rendering:pixelated;height:96vh}</style>\
 <img src=/fb.bmp id=i>\
-<script>setInterval(()=>{i.src='/fb.bmp?'+Date.now()},1000)</script>";
+<script>i.onload=i.onerror=()=>setTimeout(()=>i.src='/fb.bmp?'+Date.now(),500)</script>";
 
 /// A response that streams the framebuffer as a 24-bit BMP with a known length.
 struct BmpResponse;
@@ -52,18 +54,26 @@ impl Content for BmpResponse {
     }
 
     fn content_length(&self) -> usize {
-        framebuffer::BMP_LEN
+        // 4bpp palettized BMP — ~6× smaller than 24-bit (the panel uses ≤16
+        // colours and the framebuffer already stores 4bpp indices).
+        framebuffer::BMP4_LEN
     }
 
     async fn write_content<W: picoserve::io::Write>(self, mut writer: W) -> Result<(), W::Error> {
         let fb = fb().lock().await;
-        writer.write_all(&framebuffer::bmp_header()).await?;
-        const CHUNK_PX: usize = 256;
-        let mut chunk = [0u8; CHUNK_PX * 3];
+        let store = fb.store();
+        writer
+            .write_all(&framebuffer::bmp4_header(&store.palette))
+            .await?;
+        // Stream 4bpp pixel data in large chunks so each write fills full TCP
+        // segments (small writes produced runt packets + stop-and-go ACKs).
+        // 4096 pixels = 2048 bytes per write (> one 1460-MSS segment).
+        const CHUNK_PX: usize = 4096;
+        let mut chunk = [0u8; CHUNK_PX / 2];
         let mut start = 0;
         while start < framebuffer::PIXELS {
             let count = CHUNK_PX.min(framebuffer::PIXELS - start);
-            let n = framebuffer::bmp_pixels_bgr(&fb, start, count, &mut chunk);
+            let n = framebuffer::bmp4_pixels(store, start, count, &mut chunk);
             writer.write_all(&chunk[..n]).await?;
             start += count;
         }

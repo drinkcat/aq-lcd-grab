@@ -145,9 +145,12 @@ async fn http_task(
     app: &'static http::AppRouter,
     config: &'static picoserve::Config,
 ) -> ! {
+    // Large TX + http buffers so more of the ~75 KiB image queues before the
+    // task has to await smoltcp, avoiding the ~2-5 ms stall seen between small
+    // flushes (tcpdump showed 2 KiB bursts with multi-ms gaps).
     let mut rx = [0u8; 1024];
-    let mut tx = [0u8; 2048];
-    let mut http_buf = [0u8; 2048];
+    let mut tx = [0u8; 8192];
+    let mut http_buf = [0u8; 8192];
     picoserve::Server::new(app, config, &mut http_buf)
         .listen_and_serve(id, stack, 80, &mut rx, &mut tx)
         .await
