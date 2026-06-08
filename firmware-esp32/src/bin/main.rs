@@ -16,7 +16,7 @@
 //! This is the bring-up scaffold: WiFi + DHCP only. The UART/decode, HTTP, and
 //! MQTT tasks are added in subsequent steps.
 
-use aq_lcd_grab_esp32::pipeline::{HOST_CMD_START, HOST_CMD_STOP, Pipeline};
+use aq_lcd_grab_esp32::pipeline::Pipeline;
 use aq_lcd_grab_esp32::{SharedFb, VALUES};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
@@ -25,6 +25,8 @@ use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::dma_rx_stream_buffer;
+use esp_hal::uart::uhci::{RxConfig as UhciRxConfig, Uhci, UhciRx};
 use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_hal::Async;
 use esp_radio::wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice};
@@ -66,35 +68,41 @@ async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }
 
-/// Drive the decode pipeline from the bridge UART. Performs the START/STOP
-/// handshake, then streams bytes into the wire/glyph/framebuffer pipeline.
+/// Drive the decode pipeline from the bridge UART over DMA (UHCI).
+///
+/// The STM32 bridge streams continuously at 921600; the plain RX FIFO (128 B)
+/// can't keep up and overflows. UHCI runs a free-running DMA ring that the CPU
+/// drains at its own pace — the same "DMA fills, poll the tail" pattern the
+/// capture firmware uses. The wire decoder resyncs on a clean frame boundary,
+/// so no START/STOP handshake is needed against an already-streaming bridge.
 #[embassy_executor::task]
-async fn uart_task(mut uart: Uart<'static, Async>, fb: &'static SharedFb) {
+async fn uart_task(uhci_rx: UhciRx<'static, Async>, fb: &'static SharedFb) {
     let values_pub = VALUES.publisher().unwrap();
     let mut pipeline = Pipeline::new();
-    let mut buf = [0u8; 512];
+    let mut scratch = [0u8; 1024];
 
-    // Handshake: tell the bridge to (re)start streaming. The bridge replies
-    // with STARTED and then frame data. We don't strictly need to drain first
-    // since the wire decoder resyncs on a clean frame boundary after START.
-    let _ = uart.write_async(&[HOST_CMD_STOP]).await;
-    Timer::after(Duration::from_millis(50)).await;
-    let _ = uart.write_async(&[HOST_CMD_START]).await;
-    info!("uart: sent START to bridge");
+    // 16 KiB DMA ring in 2 KiB chunks → ~180 ms of headroom at 921600.
+    let stream_buf = dma_rx_stream_buffer!(16 * 1024, 2048);
+    let mut transfer = match uhci_rx.read(stream_buf) {
+        Ok(t) => t,
+        Err((e, _rx, _buf)) => {
+            warn!("uhci read start failed: {e:?}");
+            return;
+        }
+    };
+    info!("uart: UHCI DMA capture started");
 
     loop {
-        match uart.read_async(&mut buf).await {
-            Ok(0) => {}
-            Ok(n) => {
-                if let Err(e) = pipeline.feed(&buf[..n], fb, &values_pub).await {
-                    warn!("wire desync ({e:?}), re-syncing");
-                    let _ = uart.write_async(&[HOST_CMD_START]).await;
-                }
-            }
-            Err(e) => {
-                warn!("uart read error: {e:?}");
-                Timer::after(Duration::from_millis(100)).await;
-            }
+        let avail = transfer.available_bytes();
+        if avail == 0 {
+            // Nothing yet — yield briefly. At line rate a 2 ms nap still leaves
+            // the 16 KiB ring far from full.
+            Timer::after(Duration::from_millis(2)).await;
+            continue;
+        }
+        let n = transfer.pop(&mut scratch);
+        if let Err(e) = pipeline.feed(&scratch[..n], fb, &values_pub).await {
+            warn!("wire desync ({e:?})");
         }
     }
 }
@@ -132,17 +140,28 @@ async fn main(spawner: Spawner) -> ! {
         FB.init(SharedFb::new(Framebuffer::new(store)))
     };
 
-    // Bridge UART (UART1). Board header pins: RX = GPIO17 (receives the
-    // bridge's TX), TX = GPIO16 (sends START/STOP back). 921600 8N1 matches the
-    // STM32F103 bench rig. (Console logging goes over USB-CDC, so these GPIOs
-    // are free for the bridge link.)
-    let uart = {
+    // Bridge UART (UART1) on GPIO17 (RX) / GPIO16 (TX), 921600 8N1.
+    //
+    // On the ESP32-C6-DevKitC-1 these are U0RXD/U0TXD, wired to the onboard
+    // CH343 USB-to-UART bridge that enumerates as the "UART" USB port (VID
+    // 1a86). So the host can feed the capture straight into this port — no
+    // extra wiring — while the console/logs stay on the native USB-Serial-JTAG
+    // port (VID 303a). Off-DevKit, wire the bridge's TX → GPIO17, GND → GND
+    // (and GPIO16 → bridge RX for START/STOP).
+    let uhci_rx = {
         let cfg = UartConfig::default().with_baudrate(921_600);
-        Uart::new(peripherals.UART1, cfg)
+        let uart = Uart::new(peripherals.UART1, cfg)
             .expect("uart config")
             .with_rx(peripherals.GPIO17)
-            .with_tx(peripherals.GPIO16)
-            .into_async()
+            .with_tx(peripherals.GPIO16);
+        // UART-over-DMA. chunk_limit must stay ≤ the DMA chunk size (2048).
+        let mut uhci = Uhci::new(uart, peripherals.UHCI0, peripherals.DMA_CH0).into_async();
+        uhci.set_uart_config(&UartConfig::default().with_baudrate(921_600))
+            .expect("uhci uart config");
+        let (mut rx, _tx) = uhci.split();
+        rx.apply_config(&UhciRxConfig::default().with_chunk_limit(1024))
+            .expect("uhci rx config");
+        rx
     };
 
     static RADIO_INIT: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
@@ -178,7 +197,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(net_task(runner)).unwrap();
     // The decode pipeline runs independently of WiFi so capture works even
     // before the network is up.
-    spawner.spawn(uart_task(uart, fb)).unwrap();
+    spawner.spawn(uart_task(uhci_rx, fb)).unwrap();
 
     stack.wait_config_up().await;
     if let Some(cfg) = stack.config_v4() {
