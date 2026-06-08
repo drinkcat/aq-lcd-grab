@@ -100,6 +100,13 @@ impl Decoder {
         Self::default()
     }
 
+    /// Discard any buffered partial frame. Call after a desync (a `feed` that
+    /// returned [`WireError`]) once the stream has been re-synced upstream
+    /// (e.g. the bridge re-acked START), so stale garbage isn't reparsed.
+    pub fn reset(&mut self) {
+        self.len = 0;
+    }
+
     /// Append `bytes` and drain whatever complete frames are now available,
     /// invoking `on` once per decoded event. Returns `Err(WireError)` on an
     /// unrecognised tag — the caller should resync.
