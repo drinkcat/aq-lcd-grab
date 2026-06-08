@@ -1,0 +1,11 @@
+/target
+
+# Secrets — never commit. Copy secrets.env.example → secrets.env and fill in.
+/secrets.env
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

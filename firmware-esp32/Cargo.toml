@@ -1,0 +1,105 @@
+[package]
+name = "aq-lcd-grab-esp32"
+edition = "2024"
+rust-version = "1.88"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "aq-lcd-grab-esp32"
+path = "./src/bin/main.rs"
+
+[dependencies]
+# Shared, no_std decode stack.
+wire = { path = "../wire", package = "aq-lcd-grab-wire" }
+decoder = { path = "../decoder", package = "aq-lcd-grab-decoder" }
+framebuffer = { path = "../framebuffer", package = "aq-lcd-grab-framebuffer" }
+
+esp-hal = { version = "~1.0", features = ["esp32c6", "log-04", "unstable"] }
+esp-rtos = { version = "0.2.0", features = [
+  "embassy",
+  "esp-alloc",
+  "esp-radio",
+  "esp32c6",
+  "log-04",
+] }
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c6", "log-04"] }
+log = "0.4.27"
+
+embassy-net = { version = "0.7.1", features = [
+  "dhcpv4",
+  "dns",
+  "log",
+  "medium-ethernet",
+  "tcp",
+  "udp",
+] }
+embassy-futures = "0.1.1"
+embassy-executor = { version = "0.9.1", features = ["log"] }
+embassy-time = { version = "0.5.0", features = ["log"] }
+embassy-sync = "0.8.0"
+
+embedded-io = "0.7.1"
+embedded-io-async = "0.7.0"
+# rust-mqtt needs embedded-io-async v0.6; embassy-net's TcpSocket implements
+# v0.6, so we bridge it into v0.7 via a shim (see main.rs).
+embedded-io-async-v6 = { package = "embedded-io-async", version = "0.6.1", optional = true }
+
+esp-alloc = "0.9.0"
+esp-backtrace = { version = "0.18.1", features = [
+  "esp32c6",
+  "panic-handler",
+  "println",
+] }
+esp-println = { version = "0.16.1", features = ["esp32c6", "log-04"] }
+
+esp-radio = { version = "0.17.0", features = [
+  "esp-alloc",
+  "esp32c6",
+  "log-04",
+  "smoltcp",
+  "unstable",
+  "wifi",
+] }
+smoltcp = { version = "0.12.0", default-features = false, features = [
+  "log",
+  "medium-ethernet",
+  "multicast",
+  "proto-dhcpv4",
+  "proto-dns",
+  "proto-ipv4",
+  "socket-dns",
+  "socket-icmp",
+  "socket-raw",
+  "socket-tcp",
+  "socket-udp",
+] }
+
+critical-section = "1.2.0"
+static_cell = "2.1.1"
+rust-mqtt = { version = "0.5.1", default-features = false, features = [
+  "alloc",
+  "log",
+  "v5",
+], optional = true }
+
+[features]
+default = ["bridge-stm32", "homeassistant"]
+# Which capture bridge feeds the UART (selects the sample permutation).
+bridge-stm32 = []
+bridge-pico = []
+# Publish decoded sensor values to Home Assistant via MQTT.
+homeassistant = ["dep:rust-mqtt", "dep:embedded-io-async-v6"]
+
+[profile.dev]
+# Rust debug is too slow; always build with some optimization.
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 's'
+overflow-checks = false
