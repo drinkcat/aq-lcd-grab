@@ -5,6 +5,8 @@
 //! cross-task channels/state.
 
 pub mod http;
+#[cfg(feature = "homeassistant")]
+pub mod mqtt;
 pub mod pipeline;
 
 extern crate alloc;

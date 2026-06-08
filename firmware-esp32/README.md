@@ -13,8 +13,15 @@ that the host viewer uses, so the decode logic can't drift.
 
 ## Status
 
-Bring-up scaffold: WiFi + DHCP. UART/decode, HTTP, and MQTT tasks land in
-subsequent steps (see `../docs/esp32_app_plan.md`).
+Functional: WiFi + DHCP, UART/UHCI-DMA capture → decode pipeline, an HTTP
+server (panel image + `/values` JSON), and MQTT publishing to Home Assistant.
+
+### TODO
+
+- **Hardware-reset the STM32 bridge (and AQ display unit) on ESP32 boot** via a
+  GPIO reset line, so capture always starts from a known state instead of
+  relying on STOP/START against whatever state the bridge was left in. Until
+  then a stale bridge may need a manual reset.
 
 ## Setup
 

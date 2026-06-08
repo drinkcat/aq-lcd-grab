@@ -103,6 +103,11 @@ async fn uart_task(
 
     // Send STOP then START over the (UHCI-configured) UART TX. uart_tx is a
     // normal UART TX — fine for a couple of handshake bytes, no DMA needed.
+    //
+    // TODO: hardware-reset the STM32 bridge (and ideally the AQ display unit) on
+    // ESP32 boot via a GPIO reset line, so the capture always starts from a
+    // known state rather than relying on STOP/START against whatever state the
+    // bridge was left in. Until then a stale bridge may need a manual reset.
     let _ = uhci_tx.uart_tx.write_async(&[HOST_CMD_STOP]).await;
     Timer::after(Duration::from_millis(20)).await;
     let _ = uhci_tx.uart_tx.write_async(&[HOST_CMD_START]).await;
@@ -272,6 +277,11 @@ async fn main(spawner: Spawner) -> ! {
     for w in 0..http::HTTP_WORKERS {
         spawner.spawn(http_task(w, stack, app, http_config)).unwrap();
     }
+
+    #[cfg(feature = "homeassistant")]
+    spawner
+        .spawn(aq_lcd_grab_esp32::mqtt::mqtt_task(stack))
+        .unwrap();
 
     loop {
         Timer::after(Duration::from_secs(30)).await;

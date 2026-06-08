@@ -41,9 +41,6 @@ embassy-sync = "0.8.0"
 
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
-# rust-mqtt needs embedded-io-async v0.6; embassy-net's TcpSocket implements
-# v0.6, so we bridge it into v0.7 via a shim (see main.rs).
-embedded-io-async-v6 = { package = "embedded-io-async", version = "0.6.1", optional = true }
 
 esp-alloc = "0.9.0"
 esp-backtrace = { version = "0.18.1", features = [
@@ -91,7 +88,7 @@ default = ["bridge-stm32", "homeassistant"]
 bridge-stm32 = []
 bridge-pico = []
 # Publish decoded sensor values to Home Assistant via MQTT.
-homeassistant = ["dep:rust-mqtt", "dep:embedded-io-async-v6"]
+homeassistant = ["dep:rust-mqtt"]
 
 [profile.dev]
 # Rust debug is too slow; always build with some optimization.
