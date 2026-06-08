@@ -16,6 +16,8 @@
 //! when it detects idleness (serial read timeout / drain-loop idle) to emit
 //! any dirty rows.
 
+#![cfg_attr(not(test), no_std)]
+
 mod fnv;
 use fnv::{fnv_init, fnv_mix};
 
@@ -195,11 +197,6 @@ pub struct GlyphMatch {
     pub label: &'static str,
 }
 
-pub struct RowReport {
-    pub name: &'static str,
-    pub value: String,
-}
-
 pub struct DecodeOut {
     pub glyph: Option<GlyphMatch>,
 }
@@ -281,26 +278,33 @@ impl Decoder {
         }
     }
 
-    /// Called by the main loop when idle. Emits RowReports for dirty rows.
-    pub fn flush(&mut self) -> Vec<RowReport> {
-        let mut out = Vec::new();
+    /// Called by the main loop when idle. Invokes `f(name, value)` once for
+    /// each dirty row, where `value` is the assembled metric string (e.g.
+    /// "3.3"). `value` borrows a small stack buffer valid only for that call —
+    /// copy it out if you need to keep it.
+    ///
+    /// Allocation-free: the value is at most `MAX_DIGITS_PER_ROW` ASCII chars
+    /// (digits, '.', ' '), built into a fixed buffer on the stack.
+    pub fn flush_each(&mut self, mut f: impl FnMut(&'static str, &str)) {
         for (def, state) in ROWS.iter().zip(self.rows.iter_mut()) {
             if !state.dirty {
                 continue;
             }
-            let value: String = state.digits[..state.n_digits]
-                .iter()
-                .map(|s| short_label(s.unwrap().label))
-                .collect();
+            // short_label() yields ASCII (digits, '.', ' '), one byte each.
+            let mut buf = [0u8; MAX_DIGITS_PER_ROW];
+            let mut n = 0;
+            for slot in &state.digits[..state.n_digits] {
+                buf[n] = short_label(slot.unwrap().label) as u8;
+                n += 1;
+            }
             // Trim the spaces produced by `blank` leading-zero-erase glyphs.
-            let value = value.trim().to_string();
-            out.push(RowReport { name: def.name, value });
+            let value = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+            f(def.name, value);
             // Slots are NOT cleared here: each new glyph removes only the
             // slots it overlaps (see RowState::insert), so the row always
             // reflects the latest on-screen value without frame resets.
             state.dirty = false;
         }
-        out
     }
 
     /// Open a PendingWindow if the current col/row window intersects a
@@ -378,6 +382,14 @@ mod tests {
     // as they differ; the decoder only cares about equality to the first pixel.
     const BG: u16 = 0x07E0; // green
     const FG: u16 = 0xF800; // red
+
+    /// Collect dirty rows from `flush_each` into owned (name, value) pairs so
+    /// tests can query them.
+    fn flush_rows(dec: &mut Decoder) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        dec.flush_each(|name, value| out.push((name, value.to_string())));
+        out
+    }
 
     /// Build and feed the bus sequence for one glyph window:
     ///   SET_COLUMN_ADDRESS(col_start, col_end)
@@ -516,9 +528,9 @@ mod tests {
         // right digit: "8"
         feed_glyph(&mut dec, 95, 218, 40, 61, TEST_MASK_40X61_8);
 
-        let rows = dec.flush();
-        let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");
-        assert_eq!(tvoc.value, "0.8");
+        let rows = flush_rows(&mut dec);
+        let tvoc = rows.iter().find(|r| r.0 == "tvoc").expect("tvoc row missing");
+        assert_eq!(tvoc.1, "0.8");
     }
 
     // ---- Value-change test: "0.09" → "3.3" (real capture layout) ----
@@ -546,7 +558,7 @@ mod tests {
         feed_glyph(&mut dec, 182, 218, 11, 11, TEST_MASK_11X11_DOT); // dot @127
         feed_glyph(&mut dec, 140, 218, 40, 61, TEST_MASK_40X61_0); // "0" @140
         feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_9); // "9" @185
-        assert_eq!(dec.flush().iter().find(|r| r.name == "tvoc").unwrap().value, "0.09");
+        assert_eq!(flush_rows(&mut dec).iter().find(|r| r.0 == "tvoc").unwrap().1, "0.09");
 
         // Second value: "3.3" — the firmware blanks the old "0"@86, places the
         // integer "3"@131, dot@172, decimal "3"@185.
@@ -554,9 +566,9 @@ mod tests {
         feed_glyph(&mut dec, 149, 218, 40, 61, TEST_MASK_40X61_3); // "3" @131
         feed_glyph(&mut dec, 137, 218, 11, 11, TEST_MASK_11X11_DOT); // dot @172
         feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_3); // "3" @185
-        let rows = dec.flush();
-        let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");
-        assert_eq!(tvoc.value, "3.3");
+        let rows = flush_rows(&mut dec);
+        let tvoc = rows.iter().find(|r| r.0 == "tvoc").expect("tvoc row missing");
+        assert_eq!(tvoc.1, "3.3");
     }
 
     // The decimal dot sits in the gap between digits and must NOT be removed
@@ -572,8 +584,8 @@ mod tests {
         // Redraw the right digit in place (same extent) — dot must remain.
         feed_glyph(&mut dec, 95,  218, 40, 61, TEST_MASK_40X61_8); // "8" @185 again
 
-        let rows = dec.flush();
-        let tvoc = rows.iter().find(|r| r.name == "tvoc").expect("tvoc row missing");
-        assert_eq!(tvoc.value, "0.8");
+        let rows = flush_rows(&mut dec);
+        let tvoc = rows.iter().find(|r| r.0 == "tvoc").expect("tvoc row missing");
+        assert_eq!(tvoc.1, "0.8");
     }
 }

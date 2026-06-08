@@ -649,12 +649,12 @@ fn push_log(log: &mut std::collections::VecDeque<LogEntry>, entry: LogEntry) {
 /// Flush settled metric rows from the glyph decoder: print each, append to the
 /// activity log, and update the value map shown in the top panel.
 fn emit_rows(g: &mut Shared, glyphs: &mut decoder::Decoder) {
-    for r in glyphs.flush() {
-        let msg = format!("= {}: {:?}", r.name, r.value);
+    glyphs.flush_each(|name, value| {
+        let msg = format!("= {name}: {value:?}");
         println!("{msg}");
         push_log(&mut g.log, LogEntry::Msg(msg));
-        g.values.insert(r.name, r.value);
-    }
+        g.values.insert(name, value.to_string());
+    });
 }
 
 struct App {
