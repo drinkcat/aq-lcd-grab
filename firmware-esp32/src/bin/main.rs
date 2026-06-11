@@ -44,6 +44,13 @@ const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
 // Default app-descriptor required by the esp-idf bootloader.
 esp_bootloader_esp_idf::esp_app_desc!();
 
+// Timestamp source for esp-println's `timestamp` feature: milliseconds since
+// boot from embassy-time's monotonic clock. Logs become "INFO (12345) - msg".
+#[unsafe(no_mangle)]
+extern "Rust" fn _esp_println_timestamp() -> u64 {
+    embassy_time::Instant::now().as_millis()
+}
+
 #[embassy_executor::task]
 async fn wifi_task(mut controller: WifiController<'static>) {
     loop {

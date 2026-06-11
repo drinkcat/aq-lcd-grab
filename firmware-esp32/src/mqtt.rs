@@ -7,6 +7,7 @@
 //! embassy-net 0.9's `TcpSocket` implements `embedded-io-async` 0.7 directly —
 //! the version rust-mqtt wants — so no version-bridging shim is needed.
 
+use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
@@ -18,6 +19,12 @@ use crate::VALUES;
 const HA_HOST: &str = env!("HA_HOST");
 const HA_USER: &str = env!("HA_USER");
 const HA_TOKEN: &str = env!("HA_TOKEN");
+
+// MQTT keepalive advertised to the broker, and how often we ping. The ping
+// must fire well within the keepalive, and the TCP socket timeout must exceed
+// the ping interval, or the connection tears down between publishes.
+const MQTT_KEEPALIVE_SECS: u16 = 60;
+const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 /// One sensor's Home Assistant wiring: the row name (matches the decoder and
 /// state topic), its discovery config topic + payload, and its state topic.
@@ -97,7 +104,9 @@ pub async fn mqtt_task(stack: Stack<'static>) {
     loop {
         info!("MQTT connecting to {HA_HOST}...");
         let mut sock = TcpSocket::new(stack, &mut rx_buf[..], &mut tx_buf[..]);
-        sock.set_timeout(Some(Duration::from_secs(10)));
+        // Must exceed PING_INTERVAL with margin, or the socket idle-times-out
+        // between pings and closes itself (broker: "connection closed by client").
+        sock.set_timeout(Some(Duration::from_secs(MQTT_KEEPALIVE_SECS as u64 * 2)));
 
         let remote = match stack
             .dns_query(HA_HOST, embassy_net::dns::DnsQueryType::A)
@@ -122,7 +131,7 @@ pub async fn mqtt_task(stack: Stack<'static>) {
 
         let connect_opts = ConnectOptions::new()
             .clean_start()
-            .keep_alive(KeepAlive::Seconds(NonZero::new(60).unwrap()))
+            .keep_alive(KeepAlive::Seconds(NonZero::new(MQTT_KEEPALIVE_SECS).unwrap()))
             .user_name(MqttString::try_from(HA_USER).unwrap())
             .password(MqttBinary::try_from(HA_TOKEN.as_bytes()).unwrap());
 
@@ -170,30 +179,55 @@ pub async fn mqtt_task(stack: Stack<'static>) {
         // (re)connect so the first sample after connecting always republishes.
         let mut last: [heapless::String<16>; SENSORS.len()] = Default::default();
 
-        loop {
-            let update = sub.next_message_pure().await;
-            let Some(idx) = SENSORS.iter().position(|s| s.row == update.name) else {
-                continue;
-            };
-            if last[idx] == update.value {
-                continue; // unchanged — skip the publish
-            }
+        'connected: loop {
+            // rust-mqtt is poll-driven: client.poll() reads incoming packets
+            // (PINGRESP, broker control traffic). Without it the socket RX backs
+            // up and the broker drops us. The ping keeps the connection (and the
+            // TCP idle timer) alive when sensor values stall. poll() idles in the
+            // cancel-safe poll_header, so losing the select race is fine.
+            let next_ping = Timer::after(PING_INTERVAL);
+            match select3(sub.next_message_pure(), next_ping, client.poll()).await {
+                Either3::First(update) => {
+                    let Some(idx) = SENSORS.iter().position(|s| s.row == update.name) else {
+                        continue;
+                    };
+                    if last[idx] == update.value {
+                        continue; // unchanged — skip the publish
+                    }
 
-            let topic =
-                TopicName::new(MqttString::try_from(SENSORS[idx].state_topic).unwrap()).unwrap();
-            let opts = PublicationOptions::new(TopicReference::Name(topic)).retain();
-            match client
-                .publish(&opts, Bytes::from(update.value.as_bytes()))
-                .await
-            {
-                Ok(_) => {
-                    info!("MQTT {} = {}", update.name, update.value.as_str());
-                    last[idx].clear();
-                    let _ = last[idx].push_str(&update.value);
+                    let topic = TopicName::new(
+                        MqttString::try_from(SENSORS[idx].state_topic).unwrap(),
+                    )
+                    .unwrap();
+                    let opts = PublicationOptions::new(TopicReference::Name(topic)).retain();
+                    match client
+                        .publish(&opts, Bytes::from(update.value.as_bytes()))
+                        .await
+                    {
+                        Ok(_) => {
+                            info!("MQTT {} = {}", update.name, update.value.as_str());
+                            last[idx].clear();
+                            let _ = last[idx].push_str(&update.value);
+                        }
+                        Err(e) => {
+                            info!("MQTT publish failed: {e:?}, reconnecting");
+                            break 'connected;
+                        }
+                    }
                 }
-                Err(e) => {
-                    info!("MQTT publish failed: {e:?}, reconnecting");
-                    break;
+                Either3::Second(_) => match client.ping().await {
+                    Ok(()) => info!("MQTT ping ok"),
+                    Err(e) => {
+                        info!("MQTT ping failed: {e:?}, reconnecting");
+                        break 'connected;
+                    }
+                },
+                Either3::Third(result) => {
+                    if let Err(e) = result {
+                        info!("MQTT poll failed: {e:?}, reconnecting");
+                        break 'connected;
+                    }
+                    // else: drained an incoming packet (e.g. PINGRESP)
                 }
             }
         }
