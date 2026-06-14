@@ -6,7 +6,7 @@ mod uart;
 
 use embassy_executor::Spawner;
 use embassy_stm32::Config;
-use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::gpio::{Level, Output, OutputOpenDrain, Speed};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use panic_halt as _;
@@ -76,6 +76,17 @@ async fn main(_spawner: Spawner) {
 
     // PC13 LED — slow blink in STOPPED, fast in STREAMING.
     let mut led = Output::new(p.PC13, Level::High, Speed::Low);
+
+    // PIC32 reset driver on PA11 (→ R16 0Ω jumper → PIC32 MCLR). The net is
+    // open-drain with a pull-up on the target main board, so we MUST use
+    // open-drain: Level::Low actively asserts reset; Level::High releases
+    // to high-Z and the main board's pull-up brings MCLR high.
+    //
+    // Held LOW at boot / while STOPPED → PIC32 parked in reset. Released on
+    // START → PIC32 boots and runs its full init (incl. the screen-clear
+    // fill) AFTER we're already streaming, so the init lands inside the
+    // capture window every session.
+    let mut pic32_rst = OutputOpenDrain::new(p.PA11, Level::Low, Speed::Low);
 
     // USART1 TX/RX transport (see uart.rs): DMA-driven TX sink + polled
     // RX for host commands.
@@ -177,6 +188,13 @@ async fn main(_spawner: Spawner) {
                             encoder.reset();
                             state = StreamState::Streaming;
                             STREAMING.store(true, core::sync::atomic::Ordering::Relaxed);
+                            // Release PIC32 reset AFTER streaming is live (the
+                            // capture DMA is armed continuously since boot), so
+                            // the PIC32's init writes — including the
+                            // screen-clear fill — land inside the capture
+                            // window. Open-drain high = high-Z, main-board
+                            // pull-up brings MCLR high.
+                            pic32_rst.set_high();
                         }
                         encoder.started(&mut sink);
                     }
@@ -186,6 +204,10 @@ async fn main(_spawner: Spawner) {
                             state = StreamState::Stopped;
                             STREAMING.store(false, core::sync::atomic::Ordering::Relaxed);
                         }
+                        // Park the PIC32 in reset whenever stopped (also on a
+                        // redundant STOP), so the next START always yields a
+                        // clean power-on init sequence.
+                        pic32_rst.set_low();
                         encoder.stopped(&mut sink);
                     }
                     HostCmd::Stats => {
