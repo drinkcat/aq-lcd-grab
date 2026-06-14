@@ -75,6 +75,11 @@ struct Args {
     /// any analysis offline.
     #[arg(long)]
     raw_dump: Option<PathBuf>,
+
+    /// Run without the egui window: just the reader loop, printing the
+    /// decoded log to stdout. For headless capture / scripted runs.
+    #[arg(long)]
+    headless: bool,
 }
 
 /// ILI9488 command names.
@@ -247,6 +252,14 @@ fn main() -> anyhow::Result<()> {
     let dump_dir = args.dump_dir.clone();
     let raw_dump = args.raw_dump.clone();
     let board = args.board;
+
+    // Headless: run the reader on this thread (it prints the decoded log)
+    // and skip the GUI entirely. For scripted capture / no window per run.
+    if args.headless {
+        reader_loop(port, board, replay, dump_dir, raw_dump, reader_shared)?;
+        return Ok(());
+    }
+
     thread::spawn(move || {
         if let Err(e) = reader_loop(port, board, replay, dump_dir, raw_dump, reader_shared) {
             eprintln!("reader thread exited: {e:#}");
