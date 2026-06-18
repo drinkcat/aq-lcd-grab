@@ -19,6 +19,7 @@
 
 use aq_lcd_grab_esp32::pipeline::Pipeline;
 use aq_lcd_grab_esp32::{http, logger, LatestValues, SharedFb, VALUES};
+use esp_storage::FlashStorage;
 use wire::{HOST_CMD_START, HOST_CMD_STOP};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
@@ -205,7 +206,12 @@ async fn main(spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    info!("aq-lcd-grab ESP32-C6 gateway starting");
+    info!(
+        "aq-lcd-grab ESP32-C6 gateway starting (built {} {} git:{})",
+        esp_bootloader_esp_idf::BUILD_DATE,
+        esp_bootloader_esp_idf::BUILD_TIME,
+        env!("GIT_COMMIT"),
+    );
 
     // Pulse the STM32 NRST low to reboot the bridge into a known state on every
     // ESP32 boot. NRST (STM32 U1 pin 7) is wired GPIO19 → R17 → NRST as
@@ -293,7 +299,7 @@ async fn main(spawner: Spawner) -> ! {
     };
 
     // Socket slots: HTTP_WORKERS listeners + DHCP + DNS + MQTT headroom.
-    static STACK_RESOURCES: StaticCell<StackResources<6>> = StaticCell::new();
+    static STACK_RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         interfaces.sta,
         embassy_net::Config::dhcpv4(Default::default()),
@@ -315,6 +321,7 @@ async fn main(spawner: Spawner) -> ! {
     // Publish the framebuffer to the HTTP handlers, build the router + config
     // once, leak to 'static, and run a pool of identical workers.
     http::set_shared(fb, latest);
+    http::set_flash(FlashStorage::new(peripherals.FLASH));
     use picoserve::AppWithStateBuilder as _;
     let app = picoserve::make_static!(http::AppRouter, http::AppProps.build_app());
     let http_config = picoserve::make_static!(picoserve::Config, http::config());

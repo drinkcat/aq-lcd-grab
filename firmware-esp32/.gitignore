@@ -2,6 +2,7 @@
 
 # Secrets — never commit. Copy secrets.env.example → secrets.env and fill in.
 /secrets.env
+/privkey.pem
 
 # Editor / OS noise
 .vscode/

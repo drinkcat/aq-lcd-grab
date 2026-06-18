@@ -1,9 +1,23 @@
-//! HTTP server (picoserve): serves the reconstructed panel framebuffer.
+//! HTTP server (picoserve): serves the reconstructed panel framebuffer and
+//! accepts OTA firmware uploads.
 //!
 //! `GET /` returns a tiny auto-refreshing HTML page; `GET /fb.bmp` streams the
 //! framebuffer as a 24-bit BMP. picoserve gives HTTP/1.1 keep-alive and a
 //! correct `Content-Length` (the BMP size is known up front), so browsers
 //! render the image reliably and reuse the connection across refreshes.
+//!
+//! `POST /ota` accepts a firmware image with a trailing 64-byte Ed25519
+//! signature. The handler streams the body in 4 KB chunks, writing directly to
+//! the inactive OTA flash partition while hashing the firmware bytes. After the
+//! last firmware byte it reads the 64-byte signature, verifies it against the
+//! accumulated SHA-512 hash using the baked-in public key, and — on success —
+//! activates the new partition and reboots.
+//!
+//! If verification fails the OTA data partition is left untouched, so the
+//! bootloader continues booting the current slot. The corrupted bytes sitting in
+//! the inactive slot are harmless: the bootloader never selects a slot without
+//! an explicit entry in the OTA data partition, and the next upload overwrites
+//! from offset 0 again.
 //!
 //! The framebuffer handle lives in a module `static` (set once at startup)
 //! rather than picoserve router state: a stateless router (`State = ()`) keeps
@@ -12,21 +26,37 @@
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use ed25519_dalek::{Digest as _, Sha512, Signature, VerifyingKey};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embedded_storage::nor_flash::NorFlash as _;
+use embedded_storage::ReadStorage as _;
+use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
+use esp_storage::FlashStorage;
+use log::{info, warn};
+use picoserve::io::Read;
+use picoserve::request::Request;
 use picoserve::response::sse::{EventSource, EventWriter};
-use picoserve::response::{Content, IntoResponse};
-use picoserve::routing::get;
-use picoserve::{AppWithStateBuilder, Config, Router, Timeouts};
+use picoserve::response::{Content, IntoResponse, ResponseWriter, StatusCode};
+use picoserve::routing::{get, MethodHandlerService};
+use picoserve::{AppWithStateBuilder, Config, ResponseSent, Router, Timeouts};
 
 use crate::{logger, LatestValues, SharedFb, ROW_NAMES};
 
-/// Number of concurrent connection-handler tasks. A browser fetches the page
-/// and image and may overlap refreshes, so a small pool keeps a listener free.
-pub const HTTP_WORKERS: usize = 2;
+/// Number of concurrent connection-handler tasks. Four workers: one per browser
+/// tab's persistent SSE stream, plus headroom for image/values requests and OTA.
+pub const HTTP_WORKERS: usize = 4;
 
 /// The shared framebuffer + latest values, published once at startup via
 /// [`set_shared`].
 static FB: AtomicPtr<SharedFb> = AtomicPtr::new(core::ptr::null_mut());
 static LATEST: AtomicPtr<LatestValues> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Flash storage for OTA, held behind a mutex so only one OTA runs at a time.
+static FLASH: Mutex<CriticalSectionRawMutex, Option<FlashStorage<'static>>> = Mutex::new(None);
+
+// Baked-in Ed25519 public key, written by build.rs from `secrets.env`.
+include!(concat!(env!("OUT_DIR"), "/ota_pubkey.rs"));
 
 /// Publish the shared state for the HTTP handlers. Call once before spawning
 /// the workers.
@@ -36,6 +66,16 @@ pub fn set_shared(fb: &'static SharedFb, latest: &'static LatestValues) {
         latest as *const LatestValues as *mut LatestValues,
         Ordering::Release,
     );
+}
+
+/// Publish the flash storage for OTA. Call once before spawning the workers.
+pub fn set_flash(flash: FlashStorage<'static>) {
+    // Safe to block here: called before any HTTP workers are spawned.
+    critical_section::with(|_| {
+        if let Ok(mut g) = FLASH.try_lock() {
+            *g = Some(flash);
+        }
+    });
 }
 
 fn fb() -> &'static SharedFb {
@@ -216,6 +256,158 @@ impl Content for Json {
     }
 }
 
+/// `POST /ota` service — streams the request body to the inactive OTA flash
+/// partition, verifies the trailing Ed25519 signature, and reboots on success.
+///
+/// Implemented as a [`MethodHandlerService`] to get direct access to the
+/// streaming body reader without buffering the firmware image in RAM.
+struct OtaService;
+
+impl MethodHandlerService for OtaService {
+    async fn call_method_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _state: &(),
+        _path_parameters: (),
+        method: &str,
+        mut request: Request<'_, R>,
+        response_writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        if method != "POST" {
+            return StatusCode::METHOD_NOT_ALLOWED
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await;
+        }
+
+        let status = self.handle_ota(&mut request).await;
+        status
+            .write_to(request.body_connection.finalize().await?, response_writer)
+            .await
+    }
+}
+
+impl OtaService {
+    async fn handle_ota<R: Read>(&self, request: &mut Request<'_, R>) -> StatusCode {
+        const SIG_LEN: usize = 64;
+        const CHUNK: usize = 4096;
+
+        let total = request.body_connection.content_length();
+        if total <= SIG_LEN {
+            warn!("OTA: body too small ({total} bytes)");
+            return StatusCode::BAD_REQUEST;
+        }
+        let firmware_len = total - SIG_LEN;
+        info!("OTA: starting, firmware={firmware_len} B + {SIG_LEN}-byte sig");
+
+        let mut flash_guard = FLASH.lock().await;
+        let flash = match flash_guard.as_mut() {
+            Some(f) => f,
+            None => {
+                warn!("OTA: flash not initialised");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+
+        let mut pt_buf = [0u8; PARTITION_TABLE_MAX_LEN];
+        let mut updater =
+            match esp_bootloader_esp_idf::ota_updater::OtaUpdater::new(flash, &mut pt_buf) {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("OTA: partition error {e:?}");
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+            };
+
+        let (mut target_partition, slot) = match updater.next_partition() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("OTA: no target partition {e:?}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+        info!("OTA: writing to {slot:?}");
+
+        let mut hasher = Sha512::new();
+        let body = request.body_connection.body();
+        let mut reader = body.reader();
+        let mut buf = [0u8; CHUNK];
+        let mut written: usize = 0;
+
+        while written < firmware_len {
+            let want = CHUNK.min(firmware_len - written);
+            if reader.read_exact(&mut buf[..want]).await.is_err() {
+                warn!("OTA: read error at byte {written}");
+                return StatusCode::BAD_REQUEST;
+            }
+            hasher.update(&buf[..want]);
+            if let Err(e) = embedded_storage::Storage::write(&mut target_partition, written as u32, &buf[..want]) {
+                warn!("OTA: flash write error {e:?}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+            written += want;
+        }
+
+        // Read trailing 64-byte signature.
+        let mut sig_bytes = [0u8; SIG_LEN];
+        if reader.read_exact(&mut sig_bytes).await.is_err() {
+            warn!("OTA: failed to read signature bytes");
+            return StatusCode::BAD_REQUEST;
+        }
+
+        // Verify Ed25519 signature against SHA-512 hash of firmware.
+        let vk = match VerifyingKey::from_bytes(&OTA_PUBKEY) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("OTA: bad public key in firmware {e:?}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+        let sig = match Signature::from_slice(&sig_bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("OTA: malformed signature {e:?}");
+                return StatusCode::BAD_REQUEST;
+            }
+        };
+        // OpenSSL Ed25519 only supports pure Ed25519 (not Ed25519ph). The script
+        // signs SHA-512(firmware) as a 64-byte message, so we verify the same way.
+        let hash_bytes = hasher.finalize();
+        if let Err(e) = vk.verify_strict(&hash_bytes, &sig) {
+            warn!("OTA: signature verification failed {e:?}");
+            // Wipe the first flash sector so a partial write can't be mistaken
+            // for valid firmware if OTA data were ever corrupted.
+            let _ = target_partition.erase(0, 4096);
+            return StatusCode::FORBIDDEN;
+        }
+
+        // Erase from end of firmware to end of partition so no stale bytes from
+        // a previous (larger) OTA image remain in the inactive slot.
+        let partition_size = target_partition.capacity() as u32;
+        let erase_from = (firmware_len as u32 + 4095) & !4095; // round up to sector boundary
+        if erase_from < partition_size {
+            if let Err(e) = target_partition.erase(erase_from, partition_size) {
+                warn!("OTA: tail erase failed {e:?} (non-fatal)");
+            }
+        }
+
+        // Signature OK — activate slot and reboot.
+        info!("OTA: signature OK, activating {slot:?} and rebooting");
+        if let Err(e) = updater.activate_next_partition() {
+            warn!("OTA: activate_next_partition failed {e:?}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        if let Err(e) = updater
+            .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
+        {
+            warn!("OTA: set_current_ota_state failed {e:?}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+
+        // Brief pause so the 200 response gets sent before reset.
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+        esp_hal::system::software_reset();
+    }
+}
+
 /// App props → router via picoserve's `AppWithStateBuilder`. State is `()`
 /// (the framebuffer comes from the module `static`), so the router type is
 /// nameable as `picoserve::AppRouter<AppProps>` for `static` storage.
@@ -231,19 +423,22 @@ impl AppWithStateBuilder for AppProps {
             .route("/fb.bmp", get(fb_bmp))
             .route("/values", get(values))
             .route("/log-stream", get(log_stream))
+            .route_service("/ota", OtaService)
     }
 }
 
 /// The nameable router type for `static` storage.
 pub type AppRouter = picoserve::AppRouter<AppProps>;
 
-/// picoserve config: keep-alive on (we run a worker pool), modest timeouts.
+/// picoserve config: keep-alive on (we run a worker pool), OTA read timeout
+/// extended to accommodate large uploads over WiFi (~900 KB at typ. ~500 KB/s
+/// → ~2 s, but use 120 s to be resilient to slow connections).
 pub fn config() -> Config {
     Config::new(Timeouts {
         start_read_request: embassy_time::Duration::from_secs(10),
         persistent_start_read_request: embassy_time::Duration::from_secs(5),
-        read_request: embassy_time::Duration::from_secs(10),
-        write: embassy_time::Duration::from_secs(10),
+        read_request: embassy_time::Duration::from_secs(120),
+        write: embassy_time::Duration::from_secs(30),
     })
     .keep_connection_alive()
 }

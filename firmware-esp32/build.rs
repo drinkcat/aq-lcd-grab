@@ -1,9 +1,41 @@
 fn main() {
     load_secrets();
+    emit_git_commit();
     linker_be_nice();
     // make sure linkall.x is the last linker script (otherwise might cause
     // problems with flip-link)
     println!("cargo:rustc-link-arg=-Tlinkall.x");
+}
+
+/// Emit GIT_COMMIT (short hash + optional "+dirty" suffix).
+/// Reruns when HEAD or the index changes; falls back to "unknown" outside git.
+fn emit_git_commit() {
+    // Rerun when commits or staged changes happen.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/index");
+
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let dirty = std::process::Command::new("git")
+        .args(["diff", "--quiet", "HEAD"])
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(false);
+
+    let full = if dirty {
+        format!("{commit}+dirty")
+    } else {
+        commit
+    };
+
+    println!("cargo:rustc-env=GIT_COMMIT={full}");
 }
 
 /// Parse `secrets.env` (a gitignored `KEY=value` file) and expose the values
@@ -30,6 +62,28 @@ fn load_secrets() {
             vars.get(var).map(String::as_str).unwrap_or_default()
         );
     }
+
+    // OTA_PUBKEY: 32-byte Ed25519 public key as a lowercase hex string (64 chars).
+    // Write a Rust source file into OUT_DIR that the firmware includes verbatim.
+    let pubkey_hex = vars
+        .get("OTA_PUBKEY")
+        .map(String::as_str)
+        .unwrap_or_default();
+    let pubkey_bytes: Vec<u8> = (0..pubkey_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&pubkey_hex[i..i + 2], 16).unwrap_or(0))
+        .collect();
+    // Pad to 32 bytes if missing/empty (signature verification will just fail).
+    let mut key32 = [0u8; 32];
+    let n = pubkey_bytes.len().min(32);
+    key32[..n].copy_from_slice(&pubkey_bytes[..n]);
+    let array_body: String = key32.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(
+        format!("{out_dir}/ota_pubkey.rs"),
+        format!("pub const OTA_PUBKEY: [u8; 32] = [{array_body}];\n"),
+    )
+    .unwrap();
 }
 
 fn linker_be_nice() {
