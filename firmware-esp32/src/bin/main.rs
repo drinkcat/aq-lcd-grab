@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![recursion_limit = "256"]
 #![deny(
     clippy::mem_forget,
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
@@ -17,13 +18,14 @@
 //! MQTT tasks are added in subsequent steps.
 
 use aq_lcd_grab_esp32::pipeline::Pipeline;
-use aq_lcd_grab_esp32::{http, LatestValues, SharedFb, VALUES};
+use aq_lcd_grab_esp32::{http, logger, LatestValues, SharedFb, VALUES};
 use wire::{HOST_CMD_START, HOST_CMD_STOP};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{DriveMode, Level, Output, OutputConfig};
 use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::dma_rx_stream_buffer;
@@ -111,12 +113,24 @@ async fn uart_task(
     // Send STOP then START over the (UHCI-configured) UART TX. uart_tx is a
     // normal UART TX — fine for a couple of handshake bytes, no DMA needed.
     //
+    // Between the two, drain the RX ring: after STOP the bridge can still have
+    // a partial frame in flight (plus whatever it streamed before STOP took
+    // effect). Discarding those stale bytes means the decoder starts on the
+    // first byte after START rather than mid-frame, avoiding a desync.
+    //
     // TODO: hardware-reset the STM32 bridge (and ideally the AQ display unit) on
     // ESP32 boot via a GPIO reset line, so the capture always starts from a
     // known state rather than relying on STOP/START against whatever state the
     // bridge was left in. Until then a stale bridge may need a manual reset.
     let _ = uhci_tx.uart_tx.write_async(&[HOST_CMD_STOP]).await;
+    let _ = uhci_tx.uart_tx.flush_async().await;
+    // Let the STOP propagate and the bridge's in-flight bytes land in the ring.
     Timer::after(Duration::from_millis(20)).await;
+    let mut flushed = 0u64;
+    while transfer.available_bytes() > 0 {
+        flushed += transfer.pop(&mut scratch) as u64;
+    }
+    info!("uart: flushed {flushed} stale bytes after STOP");
     let _ = uhci_tx.uart_tx.write_async(&[HOST_CMD_START]).await;
     let _ = uhci_tx.uart_tx.flush_async().await;
     info!("uart: sent START to bridge");
@@ -176,7 +190,7 @@ async fn http_task(
 )]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    esp_println::logger::init_logger_from_env();
+    logger::init();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
@@ -192,6 +206,29 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     info!("aq-lcd-grab ESP32-C6 gateway starting");
+
+    // Pulse the STM32 NRST low to reboot the bridge into a known state on every
+    // ESP32 boot. NRST (STM32 U1 pin 7) is wired GPIO19 → R17 → NRST as
+    // OPEN-DRAIN: the STM32 has an internal pull-up (+ C8 filter), so we only
+    // ever drive LOW (= reset) and release to HIGH-Z (= run). Never push-pull
+    // high. Start Level::High so the very first edge can't glitch the line low.
+    {
+        let mut nrst = Output::new(
+            peripherals.GPIO19,
+            Level::High,
+            OutputConfig::default().with_drive_mode(DriveMode::OpenDrain),
+        );
+        nrst.set_low();
+        Timer::after(Duration::from_millis(10)).await; // hold reset
+        nrst.set_high(); // release; pull-up + C8 ramp NRST back to 3V3
+        // Keep the line released (high-Z). Dropping `nrst` here would revert
+        // GPIO19 to its reset state (also high-Z), so leaking it on purpose is
+        // unnecessary — but give the STM32 a moment to come out of reset and
+        // emit its boot log before the UART task arms and sends START.
+        core::mem::forget(nrst);
+        Timer::after(Duration::from_millis(20)).await;
+    }
+    info!("uart: pulsed STM32 NRST");
 
     // Shared framebuffer: 4bpp into the default palette, backed by a 'static
     // buffer. PIXELS/2 = 76 800 bytes.

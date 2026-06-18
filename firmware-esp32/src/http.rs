@@ -12,11 +12,12 @@
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use picoserve::response::sse::{EventSource, EventWriter};
 use picoserve::response::{Content, IntoResponse};
 use picoserve::routing::get;
 use picoserve::{AppWithStateBuilder, Config, Router, Timeouts};
 
-use crate::{LatestValues, SharedFb, ROW_NAMES};
+use crate::{logger, LatestValues, SharedFb, ROW_NAMES};
 
 /// Number of concurrent connection-handler tasks. A browser fetches the page
 /// and image and may overlap refreshes, so a small pool keeps a listener free.
@@ -54,21 +55,41 @@ fn latest() -> &'static LatestValues {
 
 // Image self-paces (next frame only after onload + gap) so requests never
 // stack; the values panel polls /values once a second and renders the JSON.
+// The log panel streams via SSE (/log-stream) and appends lines in a scrolling
+// <pre> (max 200 lines kept to bound DOM size).
 const INDEX_HTML: &str = "<!doctype html><meta charset=utf-8><title>aq-lcd</title>\
-<style>body{background:#111;color:#eee;margin:0;font:16px system-ui;\
-display:flex;gap:24px;align-items:center;justify-content:center;height:100vh}\
-img{image-rendering:pixelated;height:96vh}\
-#v{display:grid;grid-template-columns:auto auto;gap:6px 16px}\
+<style>\
+*{box-sizing:border-box}\
+html,body{height:100%;margin:0}\
+body{background:#111;color:#eee;font:16px system-ui;\
+display:flex;gap:24px;align-items:stretch;justify-content:center;padding:16px;overflow:hidden}\
+img{image-rendering:pixelated;height:100%;width:auto;flex-shrink:0;display:block}\
+#v{display:grid;grid-template-columns:auto auto;gap:6px 16px;align-self:center}\
 #v b{color:#8cf;font-weight:600}#v span{text-align:right;font-variant-numeric:tabular-nums}\
-.u{color:#888;font-size:12px}</style>\
+.u{color:#888;font-size:12px}\
+#log-wrap{display:flex;flex-direction:column;min-width:320px;max-width:480px;flex:1;overflow:hidden}\
+#log-wrap h3{margin:0 0 4px;font-size:13px;color:#8cf;flex-shrink:0}\
+#log{background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:8px;\
+font:12px/1.4 monospace;overflow-y:auto;flex:1;white-space:pre-wrap;word-break:break-all;margin:0}\
+</style>\
 <img src=/fb.bmp id=i>\
 <div id=v>loading…</div>\
+<div id=log-wrap><h3>Console</h3><pre id=log></pre></div>\
 <script>\
 const U={pm25:'µg/m³',tvoc:'ppm',co2:'ppm',temp:'°C',humidity:'%'};\
 i.onload=i.onerror=()=>setTimeout(()=>i.src='/fb.bmp?'+Date.now(),500);\
 async function vp(){try{const d=await(await fetch('/values?'+Date.now())).json();\
 v.innerHTML=Object.keys(U).map(k=>`<b>${k}</b><span>${d[k]||'–'} <i class=u>${U[k]}</i></span>`).join('')}\
 catch(e){}setTimeout(vp,1000)}vp();\
+const MAX_LOG=200;\
+const es=new EventSource('/log-stream');\
+es.addEventListener('log',e=>{\
+const el=document.getElementById('log');\
+el.textContent+=e.data+'\\n';\
+const lines=el.textContent.split('\\n');\
+if(lines.length>MAX_LOG+1)el.textContent=lines.slice(lines.length-MAX_LOG-1).join('\\n');\
+el.scrollTop=el.scrollHeight;\
+});\
 </script>";
 
 /// A response that streams the framebuffer as a 24-bit BMP with a known length.
@@ -131,6 +152,36 @@ async fn fb_bmp() -> impl IntoResponse {
     BmpResponse
 }
 
+/// `GET /log-stream` → SSE stream of console log lines.
+///
+/// The handler loops: await the logger signal, drain any buffered bytes, split
+/// into lines, and emit one SSE `log` event per line. The browser reconnects
+/// automatically if the connection drops.
+struct LogStream;
+
+impl EventSource for LogStream {
+    async fn write_events<W: picoserve::io::Write>(
+        self,
+        mut writer: EventWriter<'_, W>,
+    ) -> Result<(), W::Error> {
+        let mut line: heapless::String<256> = heapless::String::new();
+        loop {
+            // Flush all complete lines already in the ring first.
+            while logger::pop_line(&mut line) {
+                if !line.is_empty() {
+                    writer.write_event("log", line.as_str()).await?;
+                }
+            }
+            // Sleep until the logger deposits more bytes.
+            logger::SIGNAL.wait().await;
+        }
+    }
+}
+
+async fn log_stream() -> impl IntoResponse {
+    picoserve::response::sse::EventStream(LogStream)
+}
+
 /// `GET /values` → JSON of the latest decoded values, e.g.
 /// `{"pm25":"6","tvoc":"0.1","co2":"586","temp":"26","humidity":"55"}`.
 /// Built into a small heapless string (values are short).
@@ -179,6 +230,7 @@ impl AppWithStateBuilder for AppProps {
             .route("/", get(index))
             .route("/fb.bmp", get(fb_bmp))
             .route("/values", get(values))
+            .route("/log-stream", get(log_stream))
     }
 }
 
