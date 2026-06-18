@@ -207,9 +207,8 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     info!(
-        "aq-lcd-grab ESP32-C6 gateway starting (built {} {} git:{})",
-        esp_bootloader_esp_idf::BUILD_DATE,
-        esp_bootloader_esp_idf::BUILD_TIME,
+        "aq-lcd-grab ESP32-C6 gateway starting (built {} git:{})",
+        env!("BUILD_TIMESTAMP"),
         env!("GIT_COMMIT"),
     );
 

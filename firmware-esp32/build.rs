@@ -1,6 +1,7 @@
 fn main() {
     load_secrets();
     emit_git_commit();
+    emit_build_time();
     linker_be_nice();
     // make sure linkall.x is the last linker script (otherwise might cause
     // problems with flip-link)
@@ -36,6 +37,36 @@ fn emit_git_commit() {
     };
 
     println!("cargo:rustc-env=GIT_COMMIT={full}");
+}
+
+fn emit_build_time() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let secs = now.as_secs();
+    // Format as "YYYY-MM-DD HH:MM:SS UTC" without any external crate.
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400; // days since 1970-01-01
+    // Gregorian calendar computation.
+    let (y, mo, d) = days_to_ymd(days);
+    println!("cargo:rustc-env=BUILD_TIMESTAMP={y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC");
+}
+
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z % 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    (y, mo, d)
 }
 
 /// Parse `secrets.env` (a gitignored `KEY=value` file) and expose the values

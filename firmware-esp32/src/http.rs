@@ -55,6 +55,17 @@ static LATEST: AtomicPtr<LatestValues> = AtomicPtr::new(core::ptr::null_mut());
 /// Flash storage for OTA, held behind a mutex so only one OTA runs at a time.
 static FLASH: Mutex<CriticalSectionRawMutex, Option<FlashStorage<'static>>> = Mutex::new(None);
 
+/// Set to true once a valid OTA is committed; new OTA requests are rejected
+/// with 503 so no second upload races the 500 ms drain + reboot.
+static OTA_REBOOTING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Chunk buffer and hasher kept in statics to avoid large stack frames in the
+/// HTTP worker. Safe to access without a separate lock: only used while holding
+/// the FLASH mutex above.
+static mut OTA_BUF: [u8; 4096] = [0u8; 4096];
+static mut OTA_HASHER: Option<Sha512> = None;
+
 // Baked-in Ed25519 public key, written by build.rs from `secrets.env`.
 include!(concat!(env!("OUT_DIR"), "/ota_pubkey.rs"));
 
@@ -278,22 +289,32 @@ impl MethodHandlerService for OtaService {
                 .await;
         }
 
-        let status = self.handle_ota(&mut request).await;
-        status
+        let (status, reboot) = self.handle_ota(&mut request).await;
+        let sent = status
             .write_to(request.body_connection.finalize().await?, response_writer)
-            .await
+            .await?;
+        if reboot {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+            esp_hal::system::software_reset();
+        }
+        Ok(sent)
     }
 }
 
 impl OtaService {
-    async fn handle_ota<R: Read>(&self, request: &mut Request<'_, R>) -> StatusCode {
+    async fn handle_ota<R: Read>(&self, request: &mut Request<'_, R>) -> (StatusCode, bool) {
         const SIG_LEN: usize = 64;
         const CHUNK: usize = 4096;
+
+        if OTA_REBOOTING.load(Ordering::Acquire) {
+            warn!("OTA: reboot already pending, rejecting new request");
+            return (StatusCode::SERVICE_UNAVAILABLE, false);
+        }
 
         let total = request.body_connection.content_length();
         if total <= SIG_LEN {
             warn!("OTA: body too small ({total} bytes)");
-            return StatusCode::BAD_REQUEST;
+            return (StatusCode::BAD_REQUEST, false);
         }
         let firmware_len = total - SIG_LEN;
         info!("OTA: starting, firmware={firmware_len} B + {SIG_LEN}-byte sig");
@@ -303,9 +324,14 @@ impl OtaService {
             Some(f) => f,
             None => {
                 warn!("OTA: flash not initialised");
-                return StatusCode::INTERNAL_SERVER_ERROR;
+                return (StatusCode::INTERNAL_SERVER_ERROR, false);
             }
         };
+
+        // SAFETY: OTA_BUF and OTA_HASHER are only accessed while holding the
+        // FLASH mutex, so no concurrent access is possible.
+        let (buf, hasher_slot) = unsafe { (&mut *(&raw mut OTA_BUF), &mut *(&raw mut OTA_HASHER)) };
+        *hasher_slot = Some(Sha512::new());
 
         let mut pt_buf = [0u8; PARTITION_TABLE_MAX_LEN];
         let mut updater =
@@ -313,7 +339,7 @@ impl OtaService {
                 Ok(u) => u,
                 Err(e) => {
                     warn!("OTA: partition error {e:?}");
-                    return StatusCode::INTERNAL_SERVER_ERROR;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, false);
                 }
             };
 
@@ -321,27 +347,25 @@ impl OtaService {
             Ok(p) => p,
             Err(e) => {
                 warn!("OTA: no target partition {e:?}");
-                return StatusCode::INTERNAL_SERVER_ERROR;
+                return (StatusCode::INTERNAL_SERVER_ERROR, false);
             }
         };
         info!("OTA: writing to {slot:?}");
 
-        let mut hasher = Sha512::new();
         let body = request.body_connection.body();
         let mut reader = body.reader();
-        let mut buf = [0u8; CHUNK];
         let mut written: usize = 0;
 
         while written < firmware_len {
             let want = CHUNK.min(firmware_len - written);
             if reader.read_exact(&mut buf[..want]).await.is_err() {
                 warn!("OTA: read error at byte {written}");
-                return StatusCode::BAD_REQUEST;
+                return (StatusCode::BAD_REQUEST, false);
             }
-            hasher.update(&buf[..want]);
+            hasher_slot.as_mut().unwrap().update(&buf[..want]);
             if let Err(e) = embedded_storage::Storage::write(&mut target_partition, written as u32, &buf[..want]) {
                 warn!("OTA: flash write error {e:?}");
-                return StatusCode::INTERNAL_SERVER_ERROR;
+                return (StatusCode::INTERNAL_SERVER_ERROR, false);
             }
             written += want;
         }
@@ -350,7 +374,7 @@ impl OtaService {
         let mut sig_bytes = [0u8; SIG_LEN];
         if reader.read_exact(&mut sig_bytes).await.is_err() {
             warn!("OTA: failed to read signature bytes");
-            return StatusCode::BAD_REQUEST;
+            return (StatusCode::BAD_REQUEST, false);
         }
 
         // Verify Ed25519 signature against SHA-512 hash of firmware.
@@ -358,33 +382,40 @@ impl OtaService {
             Ok(k) => k,
             Err(e) => {
                 warn!("OTA: bad public key in firmware {e:?}");
-                return StatusCode::INTERNAL_SERVER_ERROR;
+                return (StatusCode::INTERNAL_SERVER_ERROR, false);
             }
         };
         let sig = match Signature::from_slice(&sig_bytes) {
             Ok(s) => s,
             Err(e) => {
                 warn!("OTA: malformed signature {e:?}");
-                return StatusCode::BAD_REQUEST;
+                return (StatusCode::BAD_REQUEST, false);
             }
         };
         // OpenSSL Ed25519 only supports pure Ed25519 (not Ed25519ph). The script
         // signs SHA-512(firmware) as a 64-byte message, so we verify the same way.
-        let hash_bytes = hasher.finalize();
+        let hash_bytes = hasher_slot.take().unwrap().finalize();
         if let Err(e) = vk.verify_strict(&hash_bytes, &sig) {
             warn!("OTA: signature verification failed {e:?}");
             // Wipe the first flash sector so a partial write can't be mistaken
             // for valid firmware if OTA data were ever corrupted.
             let _ = target_partition.erase(0, 4096);
-            return StatusCode::FORBIDDEN;
+            return (StatusCode::FORBIDDEN, false);
         }
 
         // Erase from end of firmware to end of partition so no stale bytes from
         // a previous (larger) OTA image remain in the inactive slot.
+        // FlashRegion::erase(from, to) bounds-checks both `from` and `to` as
+        // strictly inside [0, partition_size), so `to` must be < partition_size.
+        // esp-storage iterates sectors [from/4096, to/4096), so passing
+        // `partition_size - 1` as `to` erases one sector short of the end.
+        // That last sector is negligible — the bootloader won't execute a slot
+        // without an explicit otadata entry regardless.
+        const ERASE_SIZE: u32 = 4096;
         let partition_size = target_partition.capacity() as u32;
-        let erase_from = (firmware_len as u32 + 4095) & !4095; // round up to sector boundary
+        let erase_from = (firmware_len as u32 + ERASE_SIZE - 1) & !(ERASE_SIZE - 1);
         if erase_from < partition_size {
-            if let Err(e) = target_partition.erase(erase_from, partition_size) {
+            if let Err(e) = target_partition.erase(erase_from, partition_size - 1) {
                 warn!("OTA: tail erase failed {e:?} (non-fatal)");
             }
         }
@@ -393,18 +424,19 @@ impl OtaService {
         info!("OTA: signature OK, activating {slot:?} and rebooting");
         if let Err(e) = updater.activate_next_partition() {
             warn!("OTA: activate_next_partition failed {e:?}");
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            return (StatusCode::INTERNAL_SERVER_ERROR, false);
         }
         if let Err(e) = updater
             .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
         {
             warn!("OTA: set_current_ota_state failed {e:?}");
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            return (StatusCode::INTERNAL_SERVER_ERROR, false);
         }
 
-        // Brief pause so the 200 response gets sent before reset.
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
-        esp_hal::system::software_reset();
+        // Block any further OTA attempts before releasing the flash mutex and
+        // sending the response — no second upload can sneak in during the drain.
+        OTA_REBOOTING.store(true, Ordering::Release);
+        (StatusCode::OK, true)
     }
 }
 
