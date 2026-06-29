@@ -10,6 +10,7 @@ pub mod logger;
 #[cfg(feature = "homeassistant")]
 pub mod mqtt;
 pub mod pipeline;
+pub mod reboot;
 
 extern crate alloc;
 

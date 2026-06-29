@@ -333,6 +333,8 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(aq_lcd_grab_esp32::mqtt::mqtt_task(stack))
         .unwrap();
 
+    spawner.spawn(aq_lcd_grab_esp32::reboot::reboot_task()).unwrap();
+
     loop {
         Timer::after(Duration::from_secs(30)).await;
         if let Some(cfg) = stack.config_v4() {

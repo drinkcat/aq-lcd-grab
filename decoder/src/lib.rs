@@ -339,8 +339,7 @@ impl Decoder {
         let label = TEMPLATES
             .iter()
             .find(|t| t.w == w && t.h == h && t.hash == hash)
-            .map(|t| t.label)
-            .unwrap_or("#");
+            .map(|t| t.label)?;
 
         if let Some(idx) = row_for(disp_x, disp_y) {
             self.rows[idx].insert(disp_x, w, label);
