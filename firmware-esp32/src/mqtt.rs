@@ -201,9 +201,11 @@ pub async fn mqtt_task(stack: Stack<'static>) {
         // (re)connect so the first sample after connecting always republishes.
         let mut last: [heapless::String<16>; SENSORS.len()] = Default::default();
 
-        // Watchdog: track when malformed data started. If bad data persists for
-        // 5 minutes, reboot to reset the decoder state.
-        let mut bad_data_start: Option<Instant> = None;
+        // Watchdog: the instant since which at least one sensor's last-published
+        // value has looked malformed. Evaluated over the whole `last[]` snapshot
+        // on every ping tick (not per-update), so a value stuck bad still trips
+        // it. Reboots if any sensor stays bad for 5 minutes.
+        let mut bad_since: Option<Instant> = None;
 
         'connected: loop {
             // rust-mqtt is poll-driven: client.poll() reads incoming packets
@@ -219,21 +221,6 @@ pub async fn mqtt_task(stack: Stack<'static>) {
                     };
                     if last[idx] == update.value {
                         continue; // unchanged — skip the publish
-                    }
-
-                    // Check for malformed data and track watchdog.
-                    if is_value_malformed(&update.value) {
-                        if bad_data_start.is_none() {
-                            info!("BAD DATA detected in {}: '{}', watchdog started", update.name, update.value.as_str());
-                            bad_data_start = Some(Instant::now());
-                        } else if bad_data_start.unwrap().elapsed() >= Duration::from_secs(300) {
-                            info!("BAD DATA persisted for 5 minutes, rebooting...");
-                            unsafe { esp_rom_software_reset_system(); }
-                        }
-                    } else if bad_data_start.is_some() {
-                        // Data recovered — clear watchdog.
-                        info!("Data recovered, clearing watchdog");
-                        bad_data_start = None;
                     }
 
                     let topic = TopicName::new(
@@ -256,13 +243,33 @@ pub async fn mqtt_task(stack: Stack<'static>) {
                         }
                     }
                 }
-                Either3::Second(_) => match client.ping().await {
-                    Ok(()) => info!("MQTT ping ok"),
-                    Err(e) => {
-                        info!("MQTT ping failed: {e:?}, reconnecting");
-                        break 'connected;
+                Either3::Second(_) => {
+                    // Watchdog: scan the current last-published value of every
+                    // sensor. If any looks malformed, arm `bad_since`; once a bad
+                    // value has stood for 5 minutes, reboot to reset the decoder.
+                    // Any all-clean scan disarms it. Runs on the ping tick so a
+                    // value stuck bad (no new updates) is still caught.
+                    let any_bad = last.iter().any(|v| is_value_malformed(v));
+                    if any_bad {
+                        let since = *bad_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() >= Duration::from_secs(300) {
+                            info!("watchdog: malformed data persisted 5 min, rebooting");
+                            unsafe { esp_rom_software_reset_system() };
+                        } else {
+                            info!("watchdog: malformed data present, armed");
+                        }
+                    } else if bad_since.take().is_some() {
+                        info!("watchdog: data clean again, disarmed");
                     }
-                },
+
+                    match client.ping().await {
+                        Ok(()) => info!("MQTT ping ok"),
+                        Err(e) => {
+                            info!("MQTT ping failed: {e:?}, reconnecting");
+                            break 'connected;
+                        }
+                    }
+                }
                 Either3::Third(result) => {
                     if let Err(e) = result {
                         info!("MQTT poll failed: {e:?}, reconnecting");
