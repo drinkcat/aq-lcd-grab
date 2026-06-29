@@ -10,11 +10,33 @@
 use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use log::info;
 use static_cell::StaticCell;
 
 use crate::VALUES;
+
+unsafe extern "C" {
+    fn esp_rom_software_reset_system();
+}
+
+/// Check if a value string looks malformed (leading 0 without dot, `#` chars, gaps).
+fn is_value_malformed(s: &str) -> bool {
+    if s.is_empty() {
+        return false; // empty is OK (not seen yet)
+    }
+    if s.contains('#') {
+        return true; // unrecognized glyph
+    }
+    if s.contains("  ") {
+        return true; // gap (multiple spaces)
+    }
+    // Leading 0 without decimal point (e.g. "012" but not "0.1")
+    if s.starts_with('0') && !s.contains('.') && s.len() > 1 {
+        return true;
+    }
+    false
+}
 
 const HA_HOST: &str = env!("HA_HOST");
 const HA_USER: &str = env!("HA_USER");
@@ -179,6 +201,10 @@ pub async fn mqtt_task(stack: Stack<'static>) {
         // (re)connect so the first sample after connecting always republishes.
         let mut last: [heapless::String<16>; SENSORS.len()] = Default::default();
 
+        // Watchdog: track when malformed data started. If bad data persists for
+        // 5 minutes, reboot to reset the decoder state.
+        let mut bad_data_start: Option<Instant> = None;
+
         'connected: loop {
             // rust-mqtt is poll-driven: client.poll() reads incoming packets
             // (PINGRESP, broker control traffic). Without it the socket RX backs
@@ -193,6 +219,21 @@ pub async fn mqtt_task(stack: Stack<'static>) {
                     };
                     if last[idx] == update.value {
                         continue; // unchanged — skip the publish
+                    }
+
+                    // Check for malformed data and track watchdog.
+                    if is_value_malformed(&update.value) {
+                        if bad_data_start.is_none() {
+                            info!("BAD DATA detected in {}: '{}', watchdog started", update.name, update.value.as_str());
+                            bad_data_start = Some(Instant::now());
+                        } else if bad_data_start.unwrap().elapsed() >= Duration::from_secs(300) {
+                            info!("BAD DATA persisted for 5 minutes, rebooting...");
+                            unsafe { esp_rom_software_reset_system(); }
+                        }
+                    } else if bad_data_start.is_some() {
+                        // Data recovered — clear watchdog.
+                        info!("Data recovered, clearing watchdog");
+                        bad_data_start = None;
                     }
 
                     let topic = TopicName::new(
