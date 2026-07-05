@@ -126,13 +126,16 @@ img{image-rendering:pixelated;height:100%;width:auto;flex-shrink:0;display:block
 #log{background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:8px;\
 font:12px/1.4 monospace;overflow-y:auto;flex:1;white-space:pre-wrap;word-break:break-all;margin:0}\
 .ver{position:fixed;bottom:4px;right:8px;color:#666;font:11px monospace}\
-/* Portrait/phone: stack image + values on top, logs fill the rest below. */\
+/* Portrait/phone: full-width image at top, values then console below; the\
+   page SCROLLS rather than compressing everything into one screen. */\
 @media (orientation:portrait){\
-body{flex-direction:column;align-items:center;gap:12px;overflow:hidden;padding:12px 12px 24px}\
-img{height:auto;width:auto;max-height:45vh;max-width:100%}\
+html,body{height:auto}\
+body{flex-direction:column;align-items:center;gap:12px;overflow-y:auto;padding:12px 12px 24px}\
+img{width:100%;height:auto;max-width:100%;flex-shrink:1}\
 #v{align-self:stretch;justify-items:center;grid-template-columns:1fr 1fr;font-size:18px}\
 #v span{text-align:left}\
-#log-wrap{width:100%;max-width:none;min-width:0}\
+#log-wrap{width:100%;max-width:none;min-width:0;overflow:visible}\
+#log{height:60vh;flex:none}\
 }\
 </style>\
 <img src=/fb.bmp id=i>\
