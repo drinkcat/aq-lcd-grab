@@ -59,8 +59,15 @@ echo "Uploading to http://${DEVICE}/ota ..."
 # closed with N bytes remaining"). That's expected here, so we don't use -f and
 # instead branch on the parsed HTTP status: 200 = OK even if the connection then
 # dropped; anything else (or no status at all) is a real failure.
+# `-H "Expect:"` disables curl's automatic "Expect: 100-continue" header. curl
+# adds it for bodies >1KB and then waits for the server to reply "100 Continue"
+# before sending the body. picoserve doesn't send that interim response, so curl
+# stalls ~1s then sends anyway — and the device's body read can see a truncated
+# / empty body, returning 400. Suppressing the header makes curl send the body
+# immediately.
 http_code=$(curl --progress-bar -X POST "http://${DEVICE}/ota" \
      -H "Content-Type: application/octet-stream" \
+     -H "Expect:" \
      --data-binary "@${SIGNED_TMP}" \
      -o /dev/stderr \
      -w '%{http_code}' || true)
