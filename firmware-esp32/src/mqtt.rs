@@ -7,7 +7,7 @@
 //! embassy-net 0.9's `TcpSocket` implements `embedded-io-async` 0.7 directly —
 //! the version rust-mqtt wants — so no version-bridging shim is needed.
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either4, select4};
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Instant, Timer};
@@ -47,6 +47,12 @@ const HA_TOKEN: &str = env!("HA_TOKEN");
 // the ping interval, or the connection tears down between publishes.
 const MQTT_KEEPALIVE_SECS: u16 = 60;
 const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+// The panel updates its digits one at a time, so during a change like 605 -> 599
+// the display transiently reads an intermediate value (e.g. 505, when only the
+// hundreds digit has flipped). Debounce: hold a changed value back until it has
+// stayed stable for this long before publishing, so those transients are dropped.
+const DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// One sensor's Home Assistant wiring: the row name (matches the decoder and
 /// state topic), its discovery config topic + payload, and its state topic.
@@ -201,6 +207,12 @@ pub async fn mqtt_task(stack: Stack<'static>) {
         // (re)connect so the first sample after connecting always republishes.
         let mut last: [heapless::String<16>; SENSORS.len()] = Default::default();
 
+        // Debounce state. `pending[i]` holds a value that differs from `last[i]`
+        // but hasn't been stable long enough to publish yet; `deadline[i]` is when
+        // it becomes publishable. Both are cleared once the value is published.
+        let mut pending: [heapless::String<16>; SENSORS.len()] = Default::default();
+        let mut deadline: [Option<Instant>; SENSORS.len()] = Default::default();
+
         // Watchdog: the instant since which at least one sensor's last-published
         // value has looked malformed. Evaluated over the whole `last[]` snapshot
         // on every ping tick (not per-update), so a value stuck bad still trips
@@ -214,36 +226,40 @@ pub async fn mqtt_task(stack: Stack<'static>) {
             // TCP idle timer) alive when sensor values stall. poll() idles in the
             // cancel-safe poll_header, so losing the select race is fine.
             let next_ping = Timer::after(PING_INTERVAL);
-            match select3(sub.next_message_pure(), next_ping, client.poll()).await {
-                Either3::First(update) => {
+            // Wake when the earliest pending debounce deadline elapses (if any),
+            // so we publish the settled value without waiting on the next update.
+            let next_debounce = async {
+                match deadline.iter().flatten().min() {
+                    Some(&d) => Timer::at(d).await,
+                    None => core::future::pending().await,
+                }
+            };
+            match select4(
+                sub.next_message_pure(),
+                next_ping,
+                client.poll(),
+                next_debounce,
+            )
+            .await
+            {
+                Either4::First(update) => {
                     let Some(idx) = SENSORS.iter().position(|s| s.row == update.name) else {
                         continue;
                     };
+                    // Stage the value for debounced publishing. If it matches what
+                    // we last published, cancel any pending change (the panel
+                    // bounced back). Otherwise (re)arm the debounce timer so we
+                    // only publish once the digits stop moving.
                     if last[idx] == update.value {
-                        continue; // unchanged — skip the publish
-                    }
-
-                    let topic = TopicName::new(
-                        MqttString::try_from(SENSORS[idx].state_topic).unwrap(),
-                    )
-                    .unwrap();
-                    let opts = PublicationOptions::new(TopicReference::Name(topic)).retain();
-                    match client
-                        .publish(&opts, Bytes::from(update.value.as_bytes()))
-                        .await
-                    {
-                        Ok(_) => {
-                            info!("MQTT {} = {}", update.name, update.value.as_str());
-                            last[idx].clear();
-                            let _ = last[idx].push_str(&update.value);
-                        }
-                        Err(e) => {
-                            info!("MQTT publish failed: {e:?}, reconnecting");
-                            break 'connected;
-                        }
+                        pending[idx].clear();
+                        deadline[idx] = None;
+                    } else if pending[idx] != update.value {
+                        pending[idx].clear();
+                        let _ = pending[idx].push_str(&update.value);
+                        deadline[idx] = Some(Instant::now() + DEBOUNCE);
                     }
                 }
-                Either3::Second(_) => {
+                Either4::Second(_) => {
                     // Watchdog: scan the current last-published value of every
                     // sensor. If any looks malformed, arm `bad_since`; once a bad
                     // value has stood for 5 minutes, reboot to reset the decoder.
@@ -270,12 +286,50 @@ pub async fn mqtt_task(stack: Stack<'static>) {
                         }
                     }
                 }
-                Either3::Third(result) => {
+                Either4::Third(result) => {
                     if let Err(e) = result {
                         info!("MQTT poll failed: {e:?}, reconnecting");
                         break 'connected;
                     }
                     // else: drained an incoming packet (e.g. PINGRESP)
+                }
+                Either4::Fourth(()) => {
+                    // A debounce deadline elapsed: publish every pending value
+                    // whose timer has expired (a single wake can settle several).
+                    let now = Instant::now();
+                    for idx in 0..SENSORS.len() {
+                        match deadline[idx] {
+                            Some(d) if d <= now => {}
+                            _ => continue,
+                        }
+
+                        let topic = TopicName::new(
+                            MqttString::try_from(SENSORS[idx].state_topic).unwrap(),
+                        )
+                        .unwrap();
+                        let opts =
+                            PublicationOptions::new(TopicReference::Name(topic)).retain();
+                        match client
+                            .publish(&opts, Bytes::from(pending[idx].as_bytes()))
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(
+                                    "MQTT {} = {}",
+                                    SENSORS[idx].row,
+                                    pending[idx].as_str()
+                                );
+                                last[idx].clear();
+                                let _ = last[idx].push_str(&pending[idx]);
+                                pending[idx].clear();
+                                deadline[idx] = None;
+                            }
+                            Err(e) => {
+                                info!("MQTT publish failed: {e:?}, reconnecting");
+                                break 'connected;
+                            }
+                        }
+                    }
                 }
             }
         }
