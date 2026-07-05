@@ -50,8 +50,25 @@ TOTAL=$(wc -c < "$SIGNED_TMP")
 echo "Firmware: ${FW} bytes, signature: ${SIG} bytes, total: ${TOTAL} bytes"
 
 echo "Uploading to http://${DEVICE}/ota ..."
-curl -f -X POST "http://${DEVICE}/ota" \
+# --progress-bar forces curl's simple upload progress meter (it otherwise
+# suppresses it when a response body is expected). Response body goes to stderr
+# so it doesn't garble the bar. -w prints the HTTP status once headers arrive.
+#
+# On success the device resets right after replying, tearing down the socket
+# before curl finishes reading the response — curl then exits 18 ("transfer
+# closed with N bytes remaining"). That's expected here, so we don't use -f and
+# instead branch on the parsed HTTP status: 200 = OK even if the connection then
+# dropped; anything else (or no status at all) is a real failure.
+http_code=$(curl --progress-bar -X POST "http://${DEVICE}/ota" \
      -H "Content-Type: application/octet-stream" \
-     --data-binary "@${SIGNED_TMP}"
+     --data-binary "@${SIGNED_TMP}" \
+     -o /dev/stderr \
+     -w '%{http_code}' || true)
 echo
-echo "Done. Device will reboot into the new firmware."
+
+if [ "$http_code" = "200" ]; then
+    echo "Done. Device accepted firmware and is rebooting into the new image."
+else
+    echo "OTA FAILED: HTTP status '${http_code:-<none>}' (check the device serial log for the OTA: line)." >&2
+    exit 1
+fi
