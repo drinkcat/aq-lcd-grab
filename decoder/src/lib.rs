@@ -290,15 +290,26 @@ impl Decoder {
             if !state.dirty {
                 continue;
             }
-            // short_label() yields ASCII (digits, '.', ' '), one byte each.
+            // `blank` glyphs are the panel's leading-position erase markers. The
+            // current on-screen value is the rightmost contiguous run of
+            // digit/dot slots: everything to the LEFT of the last blank is stale
+            // (a wider previous value whose leftmost columns the panel never
+            // repaints for a narrower number, so those slots are never
+            // overlap-replaced). Find the last blank and start after it.
+            let slots = &state.digits[..state.n_digits];
+            let start = slots
+                .iter()
+                .rposition(|s| s.unwrap().label == "blank")
+                .map_or(0, |i| i + 1);
+
+            // short_label() yields ASCII (digits, '.'), one byte each.
             let mut buf = [0u8; MAX_DIGITS_PER_ROW];
             let mut n = 0;
-            for slot in &state.digits[..state.n_digits] {
+            for slot in &slots[start..] {
                 buf[n] = short_label(slot.unwrap().label) as u8;
                 n += 1;
             }
-            // Trim the spaces produced by `blank` leading-zero-erase glyphs.
-            let value = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+            let value = core::str::from_utf8(&buf[..n]).unwrap_or("");
             f(def.name, value);
             // Slots are NOT cleared here: each new glyph removes only the
             // slots it overlaps (see RowState::insert), so the row always
@@ -485,15 +496,17 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_glyph_returns_hash_placeholder() {
+    fn unmatched_glyph_is_dropped() {
         // Checkerboard pattern: alternating fg/bg bits, guaranteed not to
         // match any real glyph template (which all have large solid regions).
+        // An unmatched window is dropped (no slot inserted), not recorded as a
+        // '#' placeholder — otherwise the '#' leaks into published values.
         let mut dec = Decoder::new();
         let mask: Vec<u8> = (0..(40 * 61usize).div_ceil(8))
             .map(|i| if i % 2 == 0 { 0xAA } else { 0x55 })
             .collect();
         let out = feed_glyph(&mut dec, TVOC_COL, TVOC_ROW, 40, 61, &mask).unwrap();
-        assert_eq!(out.glyph.unwrap().label, "#");
+        assert!(out.glyph.is_none());
     }
 
     #[test]
@@ -586,5 +599,29 @@ mod tests {
         let rows = flush_rows(&mut dec);
         let tvoc = rows.iter().find(|r| r.0 == "tvoc").expect("tvoc row missing");
         assert_eq!(tvoc.1, "0.8");
+    }
+
+    // ---- Stale digit left of a blank (the "0 3" bug) ----
+    //
+    // When a wide value (e.g. "103") shrinks to a narrow one ("3"), the panel
+    // right-aligns the new number and paints a `blank` over the position it
+    // vacates — but a leading digit further LEFT than that blank is never
+    // repainted, so its slot is never overlap-removed. The assembled row is
+    // then [stale digit, blank, digit]. `.trim()` alone left this as "0 3";
+    // the value is really the run to the RIGHT of the last blank → "3".
+    //
+    // PM2.5 row (40x61 glyphs). disp_x → col_start = 320-(disp_x+40),
+    // disp_y=60 → row_start = 480-(60+61) = 359. All disp_x in [80,230).
+    #[test]
+    fn stale_digit_left_of_blank_dropped() {
+        let mut dec = Decoder::new();
+
+        feed_glyph(&mut dec, 180, 359, 40, 61, TEST_MASK_40X61_0);     // stale "0" @100
+        feed_glyph(&mut dec, 130, 359, 40, 61, TEST_MASK_40X61_BLANK); // blank      @150
+        feed_glyph(&mut dec, 90,  359, 40, 61, TEST_MASK_40X61_3);     // "3"        @190
+
+        let rows = flush_rows(&mut dec);
+        let pm25 = rows.iter().find(|r| r.0 == "pm25").expect("pm25 row missing");
+        assert_eq!(pm25.1, "3");
     }
 }
