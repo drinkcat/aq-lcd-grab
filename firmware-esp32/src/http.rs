@@ -108,10 +108,13 @@ fn latest() -> &'static LatestValues {
 // stack; the values panel polls /values once a second and renders the JSON.
 // The log panel streams via SSE (/log-stream) and appends lines in a scrolling
 // <pre> (max 200 lines kept to bound DOM size).
-const INDEX_HTML: &str = "<!doctype html><meta charset=utf-8><title>aq-lcd</title>\
+const INDEX_HTML: &str = concat!("<!doctype html><meta charset=utf-8>\
+<meta name=viewport content=\"width=device-width,initial-scale=1\">\
+<title>aq-lcd</title>\
 <style>\
 *{box-sizing:border-box}\
 html,body{height:100%;margin:0}\
+/* Landscape/desktop: image | values | logs in a full-height row. */\
 body{background:#111;color:#eee;font:16px system-ui;\
 display:flex;gap:24px;align-items:stretch;justify-content:center;padding:16px;overflow:hidden}\
 img{image-rendering:pixelated;height:100%;width:auto;flex-shrink:0;display:block}\
@@ -122,10 +125,20 @@ img{image-rendering:pixelated;height:100%;width:auto;flex-shrink:0;display:block
 #log-wrap h3{margin:0 0 4px;font-size:13px;color:#8cf;flex-shrink:0}\
 #log{background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:8px;\
 font:12px/1.4 monospace;overflow-y:auto;flex:1;white-space:pre-wrap;word-break:break-all;margin:0}\
+.ver{position:fixed;bottom:4px;right:8px;color:#666;font:11px monospace}\
+/* Portrait/phone: stack image + values on top, logs fill the rest below. */\
+@media (orientation:portrait){\
+body{flex-direction:column;align-items:center;gap:12px;overflow:hidden;padding:12px 12px 24px}\
+img{height:auto;width:auto;max-height:45vh;max-width:100%}\
+#v{align-self:stretch;justify-items:center;grid-template-columns:1fr 1fr;font-size:18px}\
+#v span{text-align:left}\
+#log-wrap{width:100%;max-width:none;min-width:0}\
+}\
 </style>\
 <img src=/fb.bmp id=i>\
 <div id=v>loading…</div>\
 <div id=log-wrap><h3>Console</h3><pre id=log></pre></div>\
+<div class=ver>git:", env!("GIT_COMMIT"), " · built ", env!("BUILD_TIMESTAMP"), "</div>\
 <script>\
 const U={pm25:'µg/m³',tvoc:'ppm',co2:'ppm',temp:'°C',humidity:'%'};\
 i.onload=i.onerror=()=>setTimeout(()=>i.src='/fb.bmp?'+Date.now(),500);\
@@ -141,7 +154,7 @@ const lines=el.textContent.split('\\n');\
 if(lines.length>MAX_LOG+1)el.textContent=lines.slice(lines.length-MAX_LOG-1).join('\\n');\
 el.scrollTop=el.scrollHeight;\
 });\
-</script>";
+</script>");
 
 /// A response that streams the framebuffer as a 24-bit BMP with a known length.
 struct BmpResponse;
