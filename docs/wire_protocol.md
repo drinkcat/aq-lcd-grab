@@ -83,12 +83,14 @@ on the display where the bus toggles between `0xFFFF` and
 to 1 byte at the cost of one shared 9-byte header per sequence.
 
 ```
-[0x03] [a_lo a_hi pa_lo pa_hi]  [b_lo b_hi pb_lo pb_hi]  [run_lens...] [0x00]
-       └── val_a u32 LE ─────┘  └── val_b u32 LE ─────┘  └── u8 each ─┘
+[0x03] [pa_lo pa_hi pb_lo pb_hi]  [pa_lo pa_hi pb_lo pb_hi]  [run_lens...] [0x00]
+       └──── val_a u32 LE ─────┘  └──── val_b u32 LE ─────┘  └── u8 each ─┘
 ```
 
 - `val_a`, `val_b` = the two distinct sample values that
-  alternate. Run 0 is `val_a`, run 1 is `val_b`, run 2 is
+  alternate. Each is a full sample in the same `pa | pb << 16`
+  layout as a tag=0x01 sample — not a split of one sample across
+  two words. Run 0 is `val_a`, run 1 is `val_b`, run 2 is
   `val_a`, etc.
 - `run_lens[i]` = u8 length of run *i*, so each is 1..=255.
   A run length of 1 (a lone sample) **is** allowed inside a
