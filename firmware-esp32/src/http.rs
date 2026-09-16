@@ -485,7 +485,12 @@ pub fn config() -> Config {
     Config::new(Timeouts {
         start_read_request: embassy_time::Duration::from_secs(10),
         persistent_start_read_request: embassy_time::Duration::from_secs(5),
-        read_request: embassy_time::Duration::from_secs(120),
+        // Bounds a single body read, so it caps the whole OTA upload: an
+        // 835 KB image over a weak link runs at ~5 KiB/s (~155 s), which
+        // overran the old 120 s and failed mid-stream with "read error at
+        // byte N". 300 s leaves headroom without letting a dead peer hold a
+        // worker indefinitely.
+        read_request: embassy_time::Duration::from_secs(300),
         write: embassy_time::Duration::from_secs(30),
     })
     .keep_connection_alive()
