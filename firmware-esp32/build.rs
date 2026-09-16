@@ -87,12 +87,25 @@ fn load_secrets() {
         })
         .collect();
 
-    for var in ["WIFI_SSID", "WIFI_PASSWORD", "HA_HOST", "HA_USER", "HA_TOKEN"] {
+    for var in ["HA_HOST", "HA_USER", "HA_TOKEN"] {
         println!(
             "cargo:rustc-env={var}={}",
             vars.get(var).map(String::as_str).unwrap_or_default()
         );
     }
+
+    // Device identity, so several units can share one broker. `AQ_ID` is the
+    // MQTT topic prefix, the discovery `node_id`, the `uniq_id` prefix and the
+    // HA device id; `AQ_NAME` is the name HA shows. Both default to the
+    // original single-device values, so a `secrets.env` that sets neither keeps
+    // producing byte-identical topics and entity ids.
+    for (var, default) in [("AQ_ID", "aq"), ("AQ_NAME", "Air Quality")] {
+        let val = vars.get(var).map(String::as_str).unwrap_or(default);
+        let val = if val.is_empty() { default } else { val };
+        println!("cargo:rustc-env={var}={val}");
+    }
+
+    emit_wifi_networks(&vars);
 
     // OTA_PUBKEY: 32-byte Ed25519 public key as a lowercase hex string (64 chars).
     // Write a Rust source file into OUT_DIR that the firmware includes verbatim.
@@ -115,6 +128,59 @@ fn load_secrets() {
         format!("pub const OTA_PUBKEY: [u8; 32] = [{array_body}];\n"),
     )
     .unwrap();
+}
+
+/// Collect Wi-Fi networks from `secrets.env` and write a `wifi_networks.rs`
+/// table into OUT_DIR for the firmware to include.
+///
+/// Accepts either the single-network form (`WIFI_SSID`/`WIFI_PASSWORD`) or the
+/// numbered form (`WIFI_SSID_1`/`WIFI_PASSWORD_1`, `_2`, ...). The unnumbered
+/// pair, when present, is always network 0 so existing `secrets.env` files keep
+/// working. Numbered entries follow in ascending order; that order is the
+/// connect-attempt order at runtime.
+///
+/// An entry with an empty SSID is skipped: a blank `WIFI_SSID=` line would
+/// otherwise become a network the firmware pointlessly tries to join. An empty
+/// password is kept, since that is how an open network is expressed.
+fn emit_wifi_networks(vars: &std::collections::HashMap<String, String>) {
+    let mut nets: Vec<(String, String)> = Vec::new();
+
+    let mut push = |ssid: Option<&String>, pass: Option<&String>| {
+        if let Some(ssid) = ssid.filter(|s| !s.is_empty()) {
+            let pass = pass.map(String::as_str).unwrap_or_default();
+            nets.push((ssid.clone(), pass.to_string()));
+        }
+    };
+
+    push(vars.get("WIFI_SSID"), vars.get("WIFI_PASSWORD"));
+
+    // Numbered entries. Stop at the first gap so a typo'd index can't silently
+    // drop every network after it.
+    for i in 1.. {
+        let ssid_key = format!("WIFI_SSID_{i}");
+        if !vars.contains_key(&ssid_key) {
+            break;
+        }
+        push(vars.get(&ssid_key), vars.get(&format!("WIFI_PASSWORD_{i}")));
+    }
+
+    if nets.is_empty() {
+        println!("cargo:warning=no Wi-Fi networks in secrets.env; firmware will not connect");
+    }
+
+    let entries: String = nets
+        .iter()
+        .map(|(s, p)| format!("    ({:?}, {:?}),\n", s, p))
+        .collect();
+
+    let body = format!(
+        "pub const WIFI_NETWORKS: [(&str, &str); {}] = [\n{}];\n",
+        nets.len(),
+        entries
+    );
+
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(format!("{out_dir}/wifi_networks.rs"), body).unwrap();
 }
 
 fn linker_be_nice() {
