@@ -42,6 +42,11 @@ const HA_HOST: &str = env!("HA_HOST");
 const HA_USER: &str = env!("HA_USER");
 const HA_TOKEN: &str = env!("HA_TOKEN");
 
+/// MQTT client id, derived from this unit's `AQ_ID`. It must differ per unit: a
+/// broker drops the existing session when a second client connects with the
+/// same id, so two units sharing one id would disconnect each other in a loop.
+const CLIENT_ID: &str = concat!("aq_lcd_", env!("AQ_ID"));
+
 // MQTT keepalive advertised to the broker, and how often we ping. The ping
 // must fire well within the keepalive, and the TCP socket timeout must exceed
 // the ping interval, or the connection tears down between publishes.
@@ -63,41 +68,41 @@ struct Sensor {
     state_topic: &'static str,
 }
 
+/// Build one [`Sensor`] entry. `$row` is both the decoder row name and the
+/// per-sensor suffix of every topic and id, matching the original hand-written
+/// table. `AQ_ID` (from `secrets.env`, default `aq`) prefixes every topic,
+/// `uniq_id` and the HA device id, so a second unit only needs a different
+/// `AQ_ID` to coexist with the first instead of overwriting its entities. The discovery payload is assembled with `concat!` so it stays a
+/// `&'static str` with no runtime formatting.
+macro_rules! sensor {
+    ($row:literal, $name:literal, $dev_cla:literal, $unit:literal) => {
+        Sensor {
+            row: $row,
+            disc_topic: concat!("homeassistant/sensor/", env!("AQ_ID"), "/", $row, "/config"),
+            disc_payload: concat!(
+                r#"{"name":""#, $name,
+                r#"","uniq_id":""#, env!("AQ_ID"), "_", $row,
+                r#"","stat_t":""#, env!("AQ_ID"), "/", $row,
+                r#"","dev_cla":""#, $dev_cla,
+                r#"","unit_of_meas":""#, $unit,
+                r#"","stat_cla":"measurement","dev":{"ids":[""#, env!("AQ_ID"),
+                r#""],"name":""#, env!("AQ_NAME"), r#""}}"#,
+            ),
+            state_topic: concat!(env!("AQ_ID"), "/", $row),
+        }
+    };
+}
+
 // The panel reports PM2.5 (µg/m³), TVOC (ppm per the panel label), CO2 (ppm),
-// temperature (°C) and humidity (%). State topics live under `aq/` (subscribe
-// to `aq/#`); discovery stays under `homeassistant/` as HA requires. All share
-// one device so HA groups them.
+// temperature (°C) and humidity (%). State topics live under `<AQ_ID>/`
+// (subscribe to `<AQ_ID>/#`); discovery stays under `homeassistant/` as HA
+// requires. All share one device so HA groups them.
 const SENSORS: &[Sensor] = &[
-    Sensor {
-        row: "pm25",
-        disc_topic: "homeassistant/sensor/aq/pm25/config",
-        disc_payload: r#"{"name":"PM2.5","uniq_id":"aq_pm25","stat_t":"aq/pm25","dev_cla":"pm25","unit_of_meas":"µg/m³","stat_cla":"measurement","dev":{"ids":["aq"],"name":"Air Quality"}}"#,
-        state_topic: "aq/pm25",
-    },
-    Sensor {
-        row: "tvoc",
-        disc_topic: "homeassistant/sensor/aq/tvoc/config",
-        disc_payload: r#"{"name":"TVOC","uniq_id":"aq_tvoc","stat_t":"aq/tvoc","dev_cla":"volatile_organic_compounds_parts","unit_of_meas":"ppm","stat_cla":"measurement","dev":{"ids":["aq"],"name":"Air Quality"}}"#,
-        state_topic: "aq/tvoc",
-    },
-    Sensor {
-        row: "co2",
-        disc_topic: "homeassistant/sensor/aq/co2/config",
-        disc_payload: r#"{"name":"CO2","uniq_id":"aq_co2","stat_t":"aq/co2","dev_cla":"carbon_dioxide","unit_of_meas":"ppm","stat_cla":"measurement","dev":{"ids":["aq"],"name":"Air Quality"}}"#,
-        state_topic: "aq/co2",
-    },
-    Sensor {
-        row: "temp",
-        disc_topic: "homeassistant/sensor/aq/temp/config",
-        disc_payload: r#"{"name":"Temperature","uniq_id":"aq_temp","stat_t":"aq/temp","dev_cla":"temperature","unit_of_meas":"°C","stat_cla":"measurement","dev":{"ids":["aq"],"name":"Air Quality"}}"#,
-        state_topic: "aq/temp",
-    },
-    Sensor {
-        row: "humidity",
-        disc_topic: "homeassistant/sensor/aq/humidity/config",
-        disc_payload: r#"{"name":"Humidity","uniq_id":"aq_humidity","stat_t":"aq/humidity","dev_cla":"humidity","unit_of_meas":"%","stat_cla":"measurement","dev":{"ids":["aq"],"name":"Air Quality"}}"#,
-        state_topic: "aq/humidity",
-    },
+    sensor!("pm25", "PM2.5", "pm25", "\u{b5}g/m\u{b3}"),
+    sensor!("tvoc", "TVOC", "volatile_organic_compounds_parts", "ppm"),
+    sensor!("co2", "CO2", "carbon_dioxide", "ppm"),
+    sensor!("temp", "Temperature", "temperature", "\u{b0}C"),
+    sensor!("humidity", "Humidity", "humidity", "%"),
 ];
 
 /// MQTT publisher task: connect to the HA broker, publish discovery + values,
@@ -167,7 +172,7 @@ pub async fn mqtt_task(stack: Stack<'static>) {
             .connect(
                 sock,
                 &connect_opts,
-                Some(MqttString::try_from("aq_lcd").unwrap()),
+                Some(MqttString::try_from(CLIENT_ID).unwrap()),
             )
             .await
         {

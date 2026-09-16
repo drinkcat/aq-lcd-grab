@@ -1,7 +1,11 @@
 /target
 
 # Secrets — never commit. Copy secrets.env.example → secrets.env and fill in.
+# Per-device variants (secrets.env.<device>) are covered too; only the example
+# is tracked.
 /secrets.env
+/secrets.env.*
+!/secrets.env.example
 /privkey.pem
 
 # Editor / OS noise
