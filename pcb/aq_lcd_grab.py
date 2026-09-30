@@ -114,9 +114,11 @@ FLEX_PIN_LABELS = {
     19: "GND_19",
     20: "P20_RD",      # held high, likely RD (tied) or RST (released)
     21: "P21",         # unknown — TE / RST / NC
-    22: "WR",
+    # 22/24 per the module datasheet (docs/display_notes.md). v1 had
+    # these swapped (old probed guess) — see pcb_spec.md "v1 errata".
+    22: "CS",
     23: "DC",
-    24: "CS",
+    24: "WR",
     25: "P25",
     26: "P26",
     27: "P27",
@@ -498,4 +500,4 @@ _hash = subprocess.check_output(
     cwd=os.path.dirname(os.path.abspath(__file__)),
     text=True,
 ).strip()
-print(f"\nSilkscreen label: v1-{_hash}")
+print(f"\nSilkscreen label: v2-{_hash}")

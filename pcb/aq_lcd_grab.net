@@ -1061,11 +1061,11 @@
       (class "Default")
       (node
         (ref "J1")
-        (pin "16")
+        (pin "18")
         (pintype "PASSIVE"))
       (node
         (ref "J2")
-        (pin "24")
+        (pin "22")
         (pintype "PASSIVE"))
       (node
         (ref "U1")
@@ -1897,11 +1897,11 @@
       (class "Default")
       (node
         (ref "J1")
-        (pin "18")
+        (pin "16")
         (pintype "PASSIVE"))
       (node
         (ref "J2")
-        (pin "22")
+        (pin "24")
         (pintype "PASSIVE"))
       (node
         (ref "U1")

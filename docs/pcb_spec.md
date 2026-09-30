@@ -183,9 +183,9 @@ fixed as WR/TIM2_ETR and must not be reassigned):
 | 15       | DB13 (R2)       | PA4       |                                                |
 | 16       | DB14 (R3)       | PB0       | red MSB pair on PB                             |
 | 17       | DB15 (R4)       | PB1       |                                                |
-| 22       | WR              | PA0       | TIM2_ETR; fixed, must not be swapped           |
+| 22       | CS              | PA5       | unused in decode; PA side is fine              |
 | 23       | DC              | PB15      | framing signal; must be on PB (self-sufficient)|
-| 24       | CS              | PA5       | unused in decode; PA side is fine              |
+| 24       | WR              | PA0       | TIM2_ETR; fixed, must not be swapped           |
 | —        | LED             | PC13      | matches Blue/Black Pill onboard LED            |
 
 The header [`firmware/src/pio_capture.rs`](../firmware/src/pio_capture.rs)
@@ -469,6 +469,25 @@ PA6, PA7, PA8, PA11, PA12, PA15 (JTDI — JTAG disable required),
 PB3 (JTDO — likewise), PB4 (NJTRST — likewise),
 PD0/PD1 (OSC; usable as GPIO when no crystal is fitted).
 Plenty of test-point and future-bodge headroom.
+
+## v1 errata
+
+### WR and CS swapped on flex pins 22/24
+
+v1 (commit `8a466f4`, silkscreen `v1`) routes flex pin 22 to PA0 and
+pin 24 to PA5. The SKiDL pin map was written from the early *probed*
+pinout (22 = WR, 24 = CS) and was never updated after
+[display_notes.md](display_notes.md) was matched against the module
+datasheet, which has **22 = CS, 24 = WR**. On v1, PA0 (TIM2_ETR) is
+therefore clocked by CS, not WR, and capture doesn't work.
+
+**Rework on built v1 boards:** a bodge wire from the J2 pad
+silkscreened *CS* (pin 24, which actually carries WR) straight to STM32
+PA0 (U1 pin 10). This works because CS is unused in decoding.
+
+**Fixed in v2:** pins 22/24 swapped in `FLEX_PIN_LABELS` in
+[`pcb/aq_lcd_grab.py`](../pcb/aq_lcd_grab.py), with PA0/PA5 re-routed.
+Firmware and host mapping are unchanged (PA0 = WR, PA5 = CS on both).
 
 ## Open questions
 

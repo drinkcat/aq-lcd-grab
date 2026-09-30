@@ -38,7 +38,7 @@ PCB = Path(__file__).resolve().parent / "aq_lcd_grab.kicad_pcb"
 FLEX_NETS = [
     "GND_1", "DB0", "DB1", "DB2", "DB3", "DB4", "DB5", "DB6", "DB7",
     "DB8", "DB9", "DB10", "DB11", "DB12", "DB13", "DB14", "DB15",
-    "GND_18", "GND_19", "P20_RD", "P21", "WR", "DC", "CS",
+    "GND_18", "GND_19", "P20_RD", "P21", "CS", "DC", "WR",
     "P25", "P26", "P27", "P28", "P29", "P30", "P31", "P32",
     "VCC_33", "P34", "VCC_35", "VCC_36", "VCC_37", "P38", "P39",
 ]
